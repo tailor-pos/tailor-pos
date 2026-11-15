@@ -1,7 +1,8 @@
 // Tailor POS service worker: lets the installed app open without internet.
-// The app page is fetched fresh when online (so updates arrive) and from the cache when offline.
+// The app page is fetched fresh when online (so updates arrive) and from the cache when offline, or when the
+// network does not answer within 4 seconds (Wi-Fi without internet); the fresh copy is still kept when it arrives.
 // Database traffic (Firestore, Supabase) is never touched here; only the app and its libraries are cached.
-const CACHE = 'tailorpos-6004c9e00f';
+const CACHE = 'tailorpos-4e37e186dd';
 const CORE = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-180.png', './favicon.png'];
 const SDK = ["https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.103.1"];
 
@@ -19,11 +20,15 @@ self.addEventListener('fetch', (e) => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin === location.origin) {
-    // network first, cache as fallback
-    e.respondWith(fetch(req).then((r) => {
-      if (r.ok) { const copy = r.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); }
+    // network first, cache as fallback (also when the network is slow to answer)
+    const net = fetch(req).then((r) => {
+      if (r.ok) { const copy = r.clone(); return caches.open(CACHE).then((c) => c.put(req, copy)).then(() => r, () => r); }
       return r;
-    }).catch(() => caches.match(req, { ignoreSearch: true }).then((r) => r || caches.match('./index.html'))));
+    });
+    const kept = () => caches.match(req, { ignoreSearch: true }).then((r) => r || caches.match('./index.html'));
+    e.waitUntil(net.catch(() => null));
+    e.respondWith(Promise.race([net, new Promise((res) => setTimeout(res, 4000)).then(kept).then((r) => r || net)])
+      .catch(() => kept().then((r) => r || Response.error())));
     return;
   }
   if (url.hostname === 'www.gstatic.com' || url.hostname === 'cdn.jsdelivr.net' || url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com') {

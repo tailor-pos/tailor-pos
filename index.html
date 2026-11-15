@@ -400,6 +400,10 @@ input[type=radio]{accent-color:var(--primary)}
 .side-user b{display:block;color:#fff;font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sync-st{display:flex;align-items:center;gap:2px;color:#8C97AF;font-size:11.5px;font-weight:600;white-space:nowrap}
 .sync-st:hover{color:#fff}
+/* phones: no side panel, so "Offline" shows in the top bar */
+.net-slot{display:none}
+.net-pill{display:inline-flex;align-items:center;height:30px;padding:0 10px 0 9px;border-radius:999px;background:var(--bad-soft);border:1px solid var(--bad-line);color:var(--bad-ink);font-size:12px;font-weight:700;white-space:nowrap}
+.net-pill .dot-st{margin-right:5px;box-shadow:none}
 .main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column}
 
 /* ---------- top bar ---------- */
@@ -456,6 +460,7 @@ input[type=radio]{accent-color:var(--primary)}
 }
 @media (max-width:900px){
   :root{--gutter:14px}
+  .net-slot{display:contents}
   .shell{flex-direction:column}
   .side{display:none}
   .topbar{padding:10px var(--gutter);min-height:58px;gap:10px}
@@ -2369,6 +2374,10 @@ button.tk-cust-t:hover b{color:var(--accent)}
 .ticket .sep{border-top:1px dashed #000;margin:6px 0}
 .ticket .box{border:2px solid #000;padding:5px 8px;text-align:center;margin:6px 0}
 .ticket .chk{display:inline-block;width:10px;height:10px;border:1px solid #000;vertical-align:middle;margin-right:5px}
+/* the shop's own receipts (Customer Copy / Store Copy): typewriter font, plain rules */
+.ticket.mono{font-family:"IBM Plex Mono",Consolas,"Lucida Console","Courier New",monospace;font-weight:500;line-height:1.4}
+.ticket .rule{border-top:2px solid #000;margin:5px 0 7px}
+.ticket .rule.dash{border-top-style:dashed}
 .cut{page-break-after:always;height:0}
 .tk-prev{display:flex;flex-direction:column;align-items:center;gap:14px;background:#E6E8EC;padding:14px 8px;border-radius:8px;max-height:58vh;overflow:auto}
 .tk-paper{background:#fff;padding:6px 10px;box-shadow:0 1px 3px rgba(21,24,28,.18)}
@@ -2805,27 +2814,37 @@ const Remote = {
     rerender();
     if (Modal.spec) Modal.render();
   },
+  // the status at the foot of the side panel and, on phones (no side panel), the note in the top bar
+  showNet() {
+    const el = document.getElementById('sync-status');
+    if (el) el.innerHTML = syncStatusHTML();
+    document.querySelectorAll('.net-slot').forEach((s) => { s.innerHTML = netPill(); });
+  },
   setOnline(ok, msg) {
     const was = this.online;
     this.online = ok; this.lastErr = ok ? '' : (msg || 'not reachable');
-    const el = document.getElementById('sync-status');
-    if (el) el.innerHTML = syncStatusHTML();
+    this.showNet();
     const cloud = this.kind === 'cloud';
     if (was && !ok) toast(cloud ? 'Offline — changes are kept here and saved when the connection is back' : 'Lost connection to the shop PC — changes will be sent when it is back');
     if (!was && ok) toast(cloud ? 'Back online — changes saved' : 'Connected to the shop PC again');
   },
 
-  // ----- printing & drawer through the shop PC -----
-  canPrint() { return this.on && this.kind === 'pc' && this.online && this.printer && this.printer.mode && this.printer.mode !== 'off'; },
+  // ----- printing & drawer through the shop PC (TailorPOS.exe), or the printer helper with the online version -----
+  canPrint() {
+    if (this.kind === 'pc') return !!(this.on && this.online && this.printer && this.printer.mode && this.printer.mode !== 'off');
+    return Helper.ready();
+  },
+  printerCfg() { return (this.kind === 'pc' ? this.printer : Helper.printer) || {}; },
   async printPNG(blob, opts) {
+    if (this.kind !== 'pc') return Helper.print(blob, opts);
     const q = [];
     if (opts && opts.drawer) q.push('drawer=1');
     if (opts && opts.noCut) q.push('cut=0');
     return this.api('/api/print' + (q.length ? '?' + q.join('&') : ''), { method: 'POST', headers: { 'Content-Type': 'image/png' }, body: blob, timeout: 30000 });
   },
   cashDrawer() {
-    if (!this.canPrint() || !this.printer.drawerOnCash) return;
-    this.api('/api/drawer', { method: 'POST' }).catch((e) => toast('Cash drawer: ' + e.message));
+    if (!this.canPrint() || !this.printerCfg().drawerOnCash) return;
+    (this.kind === 'pc' ? this.api('/api/drawer', { method: 'POST' }) : Helper.api('/api/drawer', { method: 'POST' })).catch((e) => toast('Cash drawer: ' + e.message));
   },
   async restore(state) {
     if (this.kind === 'cloud') return Cloud.restore(state);
@@ -2837,8 +2856,14 @@ const Remote = {
 };
 function syncStatusHTML() {
   if (!Remote.on) return '<span class="dot-st grey"></span>This device only';
-  if (Remote.kind === 'cloud') return Remote.online ? '<span class="dot-st green"></span>Shared · online' : '<span class="dot-st red"></span>Offline · will sync';
+  if (Remote.kind === 'cloud') return Remote.online ? '<span class="dot-st green"></span>Shared · online' : '<span class="dot-st red"></span>Offline · ' + (Cloud.waiting ? plural(Cloud.waiting, 'change') + ' waiting' : 'will sync');
   return Remote.online ? '<span class="dot-st green"></span>Shared · shop PC' : '<span class="dot-st red"></span>Offline · will sync';
+}
+// online version without internet, on a phone: says so in the top bar (and how many changes wait to be sent)
+function netPill() {
+  if (!Remote.on || Remote.kind !== 'cloud' || Remote.online) return '';
+  const n = Cloud.waiting;
+  return '<a class="net-pill" href="#setup-devices" title="No internet. Changes are kept on this device and sent when it is back.">' + '<span class="dot-st red"></span>Offline' + (n ? ' · ' + n : '') + '</a>';
 }
 
 // ===== 01c-cloud.js =====
@@ -2862,7 +2887,7 @@ const SEG_OK = /^[A-Za-z0-9_\-.~:@+]{1,200}$/;
 
 const Cloud = {
   db: null, mode: '', user: null, device: 'd' + uid(), snap: null, counterNext: 0, pushing: null, again: false,
-  unsubs: [], restoring: false, timer: null, relistenTimer: null, quotaWarned: false, setupOk: false,
+  unsubs: [], restoring: false, timer: null, relistenTimer: null, quotaWarned: false, setupOk: false, waiting: 0, keptJs: undefined, keeping: null, replayed: 0, offIds: {}, moved: '',
   COLS: ['orders', 'customers', 'closures', 'timesheet', 'expenses', 'attendance', 'payroll'], DOCS: ['settings', 'catalogue', 'staff'],
 
   async detect() {
@@ -2935,15 +2960,25 @@ const Cloud = {
     this.snap = { docs: {}, cols: {}, photos: Object.assign({}, photos) };
     this.DOCS.forEach((dn) => { if (docs[dn] !== undefined) this.snap.docs[dn] = canon(this.docValue(dn)); });
     this.COLS.forEach((c) => { const m = this.snap.cols[c] = {}; S[c].forEach((r) => { m[r.id] = canon(r); }); });
-    Remote.online = this.fire ? navigator.onLine !== false && this.setupOk : true;
-    if (this.setupOk && this.DOCS.some((dn) => docs[dn] === undefined)) await this.push(); // first device sets up the shared data
+    // changes made here that were not sent before the app was closed or reloaded (no internet then): they go out now
+    if (this.supa) { const p = await Supa.takePending(); if (p) this.replay(p); }
+    const off = this.supa && Supa.offline;
+    Remote.online = this.fire ? navigator.onLine !== false && this.setupOk : !off;
+    if (this.setupOk && this.DOCS.some((dn) => docs[dn] === undefined)) { if (off) this.push(); else await this.push(); } // first device sets up the shared data
     this.listen();
     if (this.supa) Supa.listen();
     if (this.fire) {
       window.addEventListener('offline', () => this.netState(false));
       window.addEventListener('online', () => { if (this.dirty()) this.push(); });
     }
-    this.timer = setInterval(() => { if (!document.hidden && !this.pushing && this.dirty()) this.push(); }, 4000);
+    if (this.supa) {
+      window.addEventListener('offline', () => Remote.setOnline(false, 'No internet'));
+      window.addEventListener('online', () => { if (this.dirty()) this.push(); });
+      if (off) setTimeout(() => toast('No internet: opened from this device\'s copy. Changes are kept here and sent when the internet is back', 6000), 600);
+      else if (this.replayed) this.push();
+    }
+    // nothing can be sent without a connection; the 'online' event sends what waits as soon as it is back
+    this.timer = setInterval(() => { if (!document.hidden && !this.pushing && navigator.onLine !== false && this.dirty()) this.push(); }, 4000);
     document.addEventListener('visibilitychange', () => { if (!document.hidden && this.dirty()) this.push(); });
     document.addEventListener('focusout', () => setTimeout(() => Remote.maybeRender(), 50));
   },
@@ -2987,6 +3022,7 @@ const Cloud = {
       }
       if (dirty) return;
       const r = clone(ch.doc.data());
+      if (c === 'orders' && this.supa) this.seenNo(r.no);
       const js = canon(r);
       if (cur) { if (canon(cur) !== js) { Object.keys(cur).forEach((k) => { delete cur[k]; }); Object.assign(cur, r); changed = true; } }
       else {
@@ -3037,6 +3073,13 @@ const Cloud = {
       if (im) this.snap.photos[gid] = im; else delete this.snap.photos[gid];
     });
     if (changed) this.changed();
+  },
+  // another device's new order: the next number moves past it (the shared counter itself is read only now and then)
+  seenNo(no) {
+    const prefix = S.settings.orderPrefix || '', s = String(no || '');
+    if (!prefix || s.indexOf(prefix) !== 0 || !/^\d+$/.test(s.slice(prefix.length))) return;
+    const n = +s.slice(prefix.length) + 1;
+    if (n > this.counterNext) this.onCounter({ exists: true, data: () => ({ next: n }) });
   },
   onCounter(d) {
     const next = d.exists ? num((d.data() || {}).next) : 0;
@@ -3121,16 +3164,27 @@ const Cloud = {
   push() {
     this.touched = true;
     if (!this.snap) return Promise.resolve();
+    // online with Supabase: everything not sent yet is kept on the device first, also while a send is still running
+    const ops = this.supa ? this.keep() : null;
     if (this.pushing) { this.again = true; return this.pushing; }
     this.pushing = (async () => {
       try {
         this.touched = false;
-        await this.assignNumbers();
-        await this.run(this.ops());
+        if (this.supa) {
+          if (navigator.onLine === false) { const x = new Error('No internet'); x.code = 'unavailable'; x.quiet = true; throw x; }
+          await Supa.ensureSession(); // never send as nobody (a login that could not be renewed without internet)
+        }
+        const numbered = await this.assignNumbers();
+        const list = ops && !numbered ? ops : this.ops();
+        if (numbered && this.supa) this.keep(list); // the new orders' numbers are kept too, before they are sent
+        await this.run(list);
+        if (this.supa) { if (!this.again) this.keep([]); if (this.replayed && Remote.online) toast(this.replayed === 1 ? 'The change made without internet is saved now' : 'Changes made without internet are saved now'); this.replayed = 0; }
         if (!this.fire) Remote.setOnline(true);
+        if (this.moved) { toast(this.moved, 9000); this.moved = ''; }
+        if (this.supa && Supa.offline) Supa.catchUp();
       } catch (e) {
         this.touched = true;
-        console.warn('sync failed', e);
+        if (!(e && e.quiet)) console.warn('sync failed', e);
         if (!this.fire) Remote.setOnline(false, (e && (e.message || e.code)) || 'offline');
       }
     })().finally(() => {
@@ -3154,7 +3208,7 @@ const Cloud = {
   async assignNumbers() {
     const prov = S.orders.filter((o) => o._prov);
     const userNext = num(S.settings.nextOrderNo) !== this.counterNext ? Math.max(1, Math.round(num(S.settings.nextOrderNo))) : 0;
-    if (!prov.length && !userNext) return;
+    if (!prov.length && !userNext) return false;
     if (this.fire) return this.fireNumbers(prov, userNext);
     if (this.supa) return this.supaNumbers(prov, userNext);
     const ref = this.db.doc('meta/counter');
@@ -3177,6 +3231,7 @@ const Cloud = {
     plan.forEach(([o, no]) => { o.no = no; delete o._prov; });
     this.counterNext = next; S.settings.nextOrderNo = next;
     if (plan.length) Remote.pendingUI = true;
+    return true;
   },
 
   // Supabase: the database hands out a range of numbers in one step, so two devices never get the same one
@@ -3191,20 +3246,32 @@ const Cloud = {
         if (s.indexOf(prefix) === 0 && /^\d+$/.test(s.slice(prefix.length))) maxEx = Math.max(maxEx, +s.slice(prefix.length));
       });
       const first = await Supa.numbers(prov.length, maxEx + 1);
-      prov.slice().sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1)).forEach((o, i) => { o.no = prefix + (first + i); delete o._prov; });
+      const moved = [];
+      prov.slice().sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1)).forEach((o, i) => {
+        const old = o.no, no = prefix + (first + i);
+        // a temporary number that was shown (or printed) a while, or made without internet, and is no longer free
+        // (another device used it meanwhile); a number changed within moments of saving is not worth a note
+        const seen = this.offIds[o.id] || Date.now() - (Date.parse(o.createdAt) || Date.now()) > 20000;
+        o.no = no; delete o._prov; delete this.offIds[o.id];
+        if (old && old !== no && seen) { logEvent(o, 'Order number changed from ' + old + ' to ' + no + ' when it was saved online (' + old + ' was no longer free)'); moved.push([old, no]); }
+      });
+      // said once the orders are saved (after "Back online"), and for longer
+      if (moved.length === 1) this.moved = 'Order ' + moved[0][0] + ' is now ' + moved[0][1] + ': ' + moved[0][0] + ' was no longer free when it was saved online';
+      else if (moved.length) this.moved = moved.length + ' orders got new numbers when they were saved online (' + moved.map((m) => m[0] + ' → ' + m[1]).join(', ') + ')';
       this.counterNext = first + prov.length;
       Remote.pendingUI = true;
     }
     S.settings.nextOrderNo = this.counterNext;
+    return true;
   },
 
   // Firestore: one transaction reads the counter and the waiting orders, so two devices can never
   // hand out the same number. Any signed-in device may number any order still waiting for one.
   async fireNumbers(prov, userNext) {
-    if (!Remote.online) return; // numbers are given out once the device is back online
+    if (!Remote.online) return false; // numbers are given out once the device is back online
     const db = this.db;
     const synced = await Promise.race([db.waitForPendingWrites().then(() => true), sleep(8000).then(() => false)]);
-    if (!synced) return;
+    if (!synced) return false;
     const counterRef = db.doc('meta/counter');
     const prefix = S.settings.orderPrefix || '';
     let maxEx = 0;
@@ -3243,6 +3310,57 @@ const Cloud = {
     });
     this.counterNext = out.next; S.settings.nextOrderNo = out.next;
     if (out.plan.length) Remote.pendingUI = true;
+    return true;
+  },
+
+  // ----- Supabase: what is not sent yet, kept on the device (IndexedDB) until it is -----
+  // Closing or reloading the app without internet loses nothing: the next start puts these changes back
+  // on top of the device's copy (replay) and sends them. Written after each change, one write at a time.
+  keep(ops) {
+    if (!this.supa || !this.snap || !Supa.shop || Supa.lost) return ops || null;
+    ops = ops || this.ops();
+    const list = ops.map((op) => (op.del ? { path: op.path, del: true } : { path: op.path, body: op.body }));
+    const prov = S.orders.filter((o) => o._prov).map((o) => clone(o));
+    if (!Remote.online) prov.forEach((o) => { this.offIds[o.id] = 1; }); // made without internet: its number may change
+    const next = num(S.settings.nextOrderNo) !== this.counterNext ? Math.max(1, Math.round(num(S.settings.nextOrderNo))) : 0;
+    const p = list.length || prov.length || next ? { v: 1, at: Date.now(), ops: list, prov: prov, next: next } : null;
+    const js = p ? JSON.stringify([list, prov, next]) : '';
+    const n = p ? list.length + prov.length + (next ? 1 : 0) : 0;
+    if (n !== this.waiting) { this.waiting = n; Remote.showNet(); }
+    if (js !== this.keptJs) {
+      this.keptJs = js;
+      const write = () => Supa.keepPending(p);
+      this.keeping = (this.keeping || Promise.resolve()).then(write, write);
+    }
+    return ops;
+  },
+  replay(p) {
+    const docs = {}, photos = {};
+    let n = 0;
+    (p.ops || []).forEach((op) => {
+      const i = String(op.path).indexOf('/'), c = op.path.slice(0, i), id = op.path.slice(i + 1);
+      if (!id) return;
+      if (c === 'app') { if (this.DOCS.indexOf(id) >= 0 && !op.del && op.body && op.body.value !== undefined) { docs[id] = clone(op.body.value); n++; } return; }
+      if (c === 'photos') { photos[id] = op.del ? null : ((op.body || {}).image || null); n++; return; }
+      if (this.COLS.indexOf(c) < 0) return;
+      const at = S[c].findIndex((x) => x.id === id);
+      if (op.del) { if (at >= 0) S[c].splice(at, 1); }
+      else if (op.body && typeof op.body === 'object') { if (at >= 0) S[c][at] = clone(op.body); else S[c].push(clone(op.body)); }
+      n++;
+    });
+    if (docs.settings) { const next = S.settings.nextOrderNo; Remote.replaceDoc('settings', Object.assign(defaultSettings(), docs.settings)); S.settings.nextOrderNo = next; S.settings.orderPrefix = Supa.shop.letter + '-'; }
+    if (docs.staff && Array.isArray(docs.staff)) { fixStaff(docs.staff); Remote.replaceDoc('staff', docs.staff); }
+    if (docs.catalogue && Array.isArray(docs.catalogue)) {
+      docs.catalogue.forEach((g) => { g.tasks = g.tasks || []; g.tasks.forEach((t) => { t.variants = t.variants || []; }); g.image = this.snap.photos[g.id] || null; });
+      Remote.replaceDoc('catalogue', docs.catalogue);
+    }
+    Object.keys(photos).forEach((gid) => { const g = findCat(gid); if (g) g.image = photos[gid]; });
+    (p.prov || []).forEach((o) => { if (o && o.id && !S.orders.some((x) => x.id === o.id)) { const r = clone(o); r._prov = true; S.orders.push(r); this.offIds[r.id] = 1; n++; } });
+    if (p.next) { S.settings.nextOrderNo = p.next; n++; }
+    S.orders.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+    S.customers.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+    this.touched = true; this.replayed = n;
+    this.keep();
   },
 
   // ----- replace everything (restore a backup / delete everything) -----
@@ -3278,6 +3396,7 @@ const Cloud = {
       if (this.fire) db.doc('meta/counter').set({ next: this.counterNext }).catch((e) => this.writeFailed(e, { path: 'meta/counter' }));
       else await this.retry(() => db.doc('meta/counter').set({ next: this.counterNext }));
       await this.run(this.ops());
+      if (this.supa) this.keep([]); // nothing from before the restore is waiting any more
       if (!this.fire) Remote.setOnline(true);
     } finally { this.restoring = false; }
   },
@@ -3330,12 +3449,13 @@ const Cloud = {
     const c = (e && e.code) || '';
     const who = this.user && this.user.email;
     const msg = c === 'no-sdk' ? 'Tailor POS needs the internet the first time it opens on this device. Connect, then try again.'
+      : c === 'offline-first' ? 'There is no internet, and this device has not opened the shop before. Connect once; after that it also opens without internet.'
       : c === 'permission-denied' ? 'You are signed in as <b>' + esc(who || '') + '</b>, but this login is not allowed to open the shop data. Sign out and use the shop login, or ask for this email to be added.'
       : 'The shop data could not be loaded: ' + esc((e && e.message) || c || 'unknown problem') + '.';
     $('#app').innerHTML = '<div class="login"><div class="login-card"><div class="login-mark" aria-hidden="true">' + ico('scissors') + '</div><h1>Can\'t open the shop data</h1><p style="margin:0">' + msg + '</p>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn primary" onclick="location.reload()">Try again</button>' +
       (who ? '<button type="button" class="btn" id="prob-out">Sign out</button>' : '') + '</div></div></div>';
-    const o = $('#prob-out'); if (o) o.addEventListener('click', () => this.signOut(true));
+    const o = $('#prob-out'); if (o) o.addEventListener('click', () => (this.supa ? Supa.signOut(true) : this.signOut(true)));
   },
   async signOut(force) {
     if (!force && !Remote.online) { toast('Connect to the internet first, so no unsaved change is lost'); return; }
@@ -3374,6 +3494,9 @@ const Cloud = {
 // are fetched for that page only (peek) and never mixed into the open shop.
 // Each device keeps its own copy of the shops it opens (LocalCopy): opening the app reads the copy and fetches only
 // what changed online since, instead of every record each time.
+// Without internet: a device that has opened its shop before opens from that copy (the login, the list of shops, the
+// owner's and partners' names and the order counter are kept with it). Changes not sent yet are kept on the device too
+// (Cloud.keepPending), so closing or reloading the app loses nothing; they are sent when the internet is back.
 
 // ---------- this device's copy of a shop's records ----------
 // Quicker on a phone, and the free plan's monthly downloads stay small however many orders pile up. Every few days a
@@ -3424,7 +3547,8 @@ const LocalCopy = {
 const Supa = {
   sb: null, cfg: null, user: null, shops: [], shop: null, members: [],
   rows: {}, cursor: 0, subs: [], counterCb: null, ch: null, live: false, catching: false, catchAgain: false, timer: null,
-  peeks: {}, peekTimer: null,
+  peeks: {}, peekTimer: null, offline: false, peopleOk: false, copyPeople: null, copyCounter: 0,
+  AUTH_KEY: 'tailorpos-auth', SHOPS_KEY: 'tailorpos_shops:',
   SHOP_KEY: 'tailorpos_shop', START_KEY: 'tailorpos_start', OPEN_KEY: 'tailorpos_open', NOTE_KEY: 'tailorpos_note', PAGE: 1000,
   get multi() { return this.shops.length > 1; },
   // the open shop as a shop device (staff PINs) or as its owner / a partner (email login, every right)
@@ -3446,20 +3570,53 @@ const Supa = {
       : /fetch|network|load failed|timeout/i.test(x.message) || status === 0 || status >= 500 ? 'unavailable' : pg || 'error';
     x.pg = e; return x;
   },
+  // a request that never reached the database (no internet, the server unreachable)
+  netErr(e) {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return true;
+    if (!e) return false;
+    return e.status === 0 || e.code === 'unavailable' || /fetch|network|timeout|load failed|retryable/i.test(String(e.message || '') + ' ' + String(e.name || ''));
+  },
+  offlineFirst() { const e = new Error('No internet, and this device has not opened the shop before'); e.code = 'offline-first'; return e; },
+  // a request that hangs (Wi-Fi without internet) counts as no internet after a while, so the app still opens
+  limit(p, ms) {
+    return Promise.race([p, sleep(ms).then(() => { const e = new Error('No answer from the database (timeout)'); e.code = 'unavailable'; throw e; })]);
+  },
+  // the login kept on this device (the library's own storage), used to open the shop's copy without internet
+  keptSession() { try { const s = JSON.parse(localStorage.getItem(this.AUTH_KEY) || 'null'); return s && s.user && s.user.id && s.access_token ? s : null; } catch (e) { return null; } },
+  keepShops(list) { try { localStorage.setItem(this.SHOPS_KEY + this.user.id, JSON.stringify(list)); } catch (e) { /* storage blocked */ } },
+  keptShops() { try { const l = JSON.parse(localStorage.getItem(this.SHOPS_KEY + this.user.id) || 'null'); return Array.isArray(l) && l.length ? l : null; } catch (e) { return null; } },
+  forgetShops() { try { Object.keys(localStorage).forEach((k) => { if (k.indexOf(this.SHOPS_KEY) === 0) localStorage.removeItem(k); }); } catch (e) { /* storage blocked */ } },
+  // signed in right now (the library refreshes an old login here; without internet that fails and there is none)
+  async authed() { try { const r = await this.sb.auth.getSession(); return !!(r && r.data && r.data.session && r.data.session.access_token); } catch (e) { return false; } },
+  // before sending: never send as nobody (a login that could not be refreshed yet counts as no internet)
+  async ensureSession() {
+    if (await this.authed()) return;
+    const e = new Error('No internet'); e.code = this.keptSession() ? 'unavailable' : 'signed-out'; throw e;
+  },
 
   // ----- signing in and choosing the shop -----
   async init() {
     const cfg = this.cfg = window.TAILORPOS_SUPABASE || {};
     if (!window.supabase || typeof window.supabase.createClient !== 'function') { const e = new Error('The app could not load its online parts'); e.code = 'no-sdk'; throw e; }
     this.sb = window.supabase.createClient(cfg.url, cfg.key, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false, storageKey: 'tailorpos-auth' } });
-    let s = (await this.sb.auth.getSession()).data.session;
+    // an expired login is renewed online first; without internet that can take a while, so the wait is limited
+    // (and skipped when the device knows it has no connection at all)
+    let s = null;
+    const kept = this.keptSession();
+    if (kept && navigator.onLine === false) { s = kept; this.offline = true; }
+    else {
+      const got = await Promise.race([this.sb.auth.getSession().catch((e) => ({ data: { session: null }, error: e })), sleep(7000).then(() => ({ data: { session: null }, error: { name: 'AuthRetryableFetchError', message: 'timeout' } }))]);
+      s = got && got.data && got.data.session;
+      if (!s && kept && this.netErr(got && got.error)) { s = kept; this.offline = true; }
+    }
     if (!s) { await new Promise((resolve) => this.loginScreen(resolve)); s = (await this.sb.auth.getSession()).data.session; }
     this.user = s.user;
     Cloud.user = { email: s.user.email || '', id: s.user.id };
     this.sb.auth.onAuthStateChange((ev) => { if (ev === 'SIGNED_OUT' && !this.converting) location.reload(); });
     this.boot('Opening your shops…');
     await this.loadShops();
-    await LocalCopy.prune(this.user.id, this.shops.map((x) => x.id));
+    if (!this.offline) await LocalCopy.prune(this.user.id, this.shops.map((x) => x.id));
+    if (!this.shops.length && this.offline) throw this.offlineFirst();
     while (!this.shops.length) await this.firstShop();
     // opening the app (not a reload while working) goes to the start page chosen in Settings; a reload stays where it was
     let fresh = true;
@@ -3470,6 +3627,12 @@ const Supa = {
     if (fresh && this.multi && pref !== 'all' && pref !== 'last') saved = pref;
     this.shop = this.shops.find((x) => x.id === saved) || (this.shops.length === 1 || pref === 'all' ? this.shops[0] : null);
     if (!this.shop) this.shop = await this.chooseShop();
+    // changes made in another shop without internet and not sent yet: that shop opens, so they go out first
+    const waiting = await this.pendingShops();
+    if (waiting.length && waiting.indexOf(this.shop.id) < 0) {
+      const w = this.shops.find((x) => waiting.indexOf(x.id) >= 0);
+      if (w) { this.shop = w; setTimeout(() => toast(w.name + ' opened: it has changes from without internet still to send', 6000), 900); }
+    }
     try { localStorage.setItem(this.SHOP_KEY, this.shop.id); } catch (e) { /* storage blocked */ }
     const h = (location.hash || '').replace(/^#\/?/, '');
     if (fresh && this.multi && pref === 'all' && (!h || h === 'home')) { try { history.replaceState(null, '', location.pathname + location.search + '#shops'); } catch (e) { location.hash = '#shops'; } }
@@ -3480,7 +3643,8 @@ const Supa = {
     if (note) setTimeout(() => toast(note), 700);
     this.boot('Loading ' + this.shop.name + '…');
     const me = this.shop.role === 'owner' || this.shop.role === 'partner';
-    await Promise.all([this.loadPeople(), this.loadAll()]);
+    await Promise.all([this.offline ? Promise.resolve(false) : this.limit(this.loadPeople(), 8000).catch(() => false), this.loadAll()]);
+    if (!this.peopleOk && this.copyPeople) this.members = this.copyPeople;
     // the owner and partners work as themselves, with every right in their shop; a shop device uses staff PINs
     if (me) {
       const m = this.members.find((x) => x.user_id === this.user.id) || {};
@@ -3491,9 +3655,17 @@ const Supa = {
   takeNote() { let n = ''; try { n = sessionStorage.getItem(this.NOTE_KEY) || ''; sessionStorage.removeItem(this.NOTE_KEY); } catch (e) { n = ''; } return n; },
   boot(text) { const b = document.querySelector('#app .boot'); if (b) b.textContent = text; else $('#app').innerHTML = '<div class="boot">' + esc(text) + '</div>'; },
   async loadShops() {
-    const { data, error } = await this.sb.rpc('my_shops');
-    if (error) throw this.err(error);
-    this.shops = (data || []).map((x) => ({ id: x.id, name: x.name, letter: x.letter, role: x.role }));
+    if (!this.offline) {
+      const { data, error, status } = await this.limit(this.sb.rpc('my_shops'), 8000).catch((e) => ({ data: null, error: e, status: 0 }));
+      if (!error) {
+        const list = (data || []).map((x) => ({ id: x.id, name: x.name, letter: x.letter, role: x.role }));
+        // an empty answer only counts when the login is really there (a login that could not be renewed sees nothing)
+        if (list.length || await this.authed()) { this.shops = list; this.keepShops(list); return; }
+      } else if (!this.netErr(error) && this.err(error, status).code !== 'unavailable') throw this.err(error, status);
+    }
+    const kept = this.keptShops();
+    if (!kept) throw this.offlineFirst();
+    this.shops = kept; this.offline = true;
   },
   card(inner) { $('#app').innerHTML = '<div class="login"><div class="login-card">' + '<div class="login-mark" aria-hidden="true">' + ico('scissors') + '</div>' + inner + '</div></div>'; },
   loginScreen(resolve) {
@@ -3629,6 +3801,7 @@ const Supa = {
     this.converting = true;
     try { await this.sb.auth.signOut({ scope: 'local' }); } catch (e) { /* the email login is forgotten here either way */ }
     await LocalCopy.clear();
+    this.forgetShops();
     try { localStorage.removeItem(Auth.KEY); localStorage.setItem(this.SHOP_KEY, this.shop.id); } catch (e) { /* storage blocked */ }
     try { await this.deviceSignIn(code, name); }
     catch (e) { this.converting = false; try { sessionStorage.setItem(this.NOTE_KEY, this.deviceError(e)); } catch (x) { /* storage blocked */ } location.reload(); return; }
@@ -3669,7 +3842,8 @@ const Supa = {
     if (this.lost) return;
     this.lost = true;
     clearInterval(this.timer); clearInterval(Cloud.timer); clearTimeout(this.copyTimer);
-    LocalCopy.del(this.copyKey('main', this.shop.id)); LocalCopy.del(this.copyKey('peek', this.shop.id));
+    LocalCopy.del(this.copyKey('main', this.shop.id)); LocalCopy.del(this.copyKey('peek', this.shop.id)); LocalCopy.del(this.copyKey('pending', this.shop.id));
+    this.keepShops(this.shops.filter((x) => x.id !== this.shop.id));
     try { if (this.ch) this.sb.removeChannel(this.ch); } catch (e) { /* already gone */ }
     Modal.close();
     this.card('<h1>Signed out of ' + esc(this.shop.name) + '</h1><p style="margin:0">' + (this.device ? 'The owner or a partner signed this device out of the shop.' : 'This login no longer has access to ' + esc(this.shop.name) + '.') + ' Anything not saved yet is lost.</p>' +
@@ -3700,10 +3874,15 @@ const Supa = {
     location.reload();
   },
   async signOut(force) {
-    if (!force && Cloud.snap && Cloud.dirty()) { try { await Promise.race([Cloud.flush(), sleep(6000)]); } catch (e) { /* ignore */ } }
+    if (!force && Cloud.snap && Cloud.dirty()) {
+      try { await Promise.race([Cloud.flush(), sleep(6000)]); } catch (e) { /* checked below */ }
+      // signing out forgets this device's copy: changes not sent yet would go with it
+      if (Cloud.dirty()) { toast('Some changes are not sent yet. Connect to the internet first, then sign out.'); return; }
+    }
     // the device's copies go first (signing out reloads the page)
     this.lost = true; clearTimeout(this.copyTimer);
     await LocalCopy.clear();
+    this.forgetShops();
     try { await this.sb.auth.signOut({ scope: 'local' }); } catch (e) { /* ignore */ }
     try {
       Object.keys(localStorage).forEach((k) => { if (k.indexOf('tailorpos_draft') === 0) localStorage.removeItem(k); });
@@ -3719,8 +3898,28 @@ const Supa = {
   // the shop's owner and partners by name (they are not on the staff list)
   async loadPeople() {
     const { data, error } = await this.sb.rpc('shop_people', { p_shop: this.shop.id });
-    if (!error && Array.isArray(data)) this.members = data;
+    if (error || !Array.isArray(data)) return false;
+    if (!data.length && !(await this.authed())) return false;
+    this.members = data; this.peopleOk = true;
+    return true;
   },
+  // nobody listed in the shop: certain only when the login is there and its own list of shops no longer has this one
+  async reallyLost() {
+    if (!(await this.authed())) return false;
+    const { data, error } = await this.sb.rpc('my_shops');
+    return !error && !(data || []).some((x) => x.id === this.shop.id);
+  },
+  // shops of this login with changes kept on this device that are not sent yet
+  async pendingShops() {
+    const pre = this.user.id + ':pending:';
+    return ((await LocalCopy.keys()) || []).map(String).filter((k) => k.indexOf(pre) === 0).map((k) => k.slice(pre.length));
+  },
+  keepPending(p) {
+    if (!this.user || !this.shop || this.lost) return null;
+    const k = this.copyKey('pending', this.shop.id);
+    return p ? LocalCopy.set(k, p) : LocalCopy.del(k);
+  },
+  async takePending() { const p = await LocalCopy.get(this.copyKey('pending', this.shop.id)); return p && p.v === 1 ? p : null; },
   memberRole(name) { const m = this.members.find((x) => x.name && x.name === name); return m ? m.role : ''; },
 
   // ----- the shop's records -----
@@ -3729,25 +3928,42 @@ const Supa = {
   async loadAll() {
     this.rows = {}; this.cursor = 0;
     const c = await LocalCopy.get(this.copyKey('main', this.shop.id));
-    if (LocalCopy.usable(c)) {
+    const has = !!c && c.v === 1 && Array.isArray(c.rows);
+    const fromCopy = () => {
+      this.rows = {};
       c.rows.forEach((r) => { this.rows[this.key(r.coll, r.id)] = r; });
       this.cursor = c.cursor || 0; this.fullAt = c.fullAt;
-      const got = await this.changedSince(this.shop.id, this.cursor, false);
-      got.forEach((r) => { const old = this.rows[this.key(r.coll, r.id)], t = Date.parse(r.updated_at || '') || 0; if (!(old && old.t && t && t < old.t)) this.put(r); });
-      this.loadedFrom = 'copy'; this.fetched = got.length;
-    } else {
-      const t0 = Date.now();
-      let n = 0;
-      for (let from = 0; ; from += this.PAGE) {
-        const { data, error, status } = await this.sb.from('docs').select('coll,id,data,deleted,updated_at').eq('shop_id', this.shop.id).order('coll').order('id').range(from, from + this.PAGE - 1);
-        if (error) throw this.err(error, status);
-        (data || []).forEach((r) => this.put(r));
-        n += (data || []).length;
-        if (!data || data.length < this.PAGE) break;
+    };
+    if (has) { this.copyPeople = Array.isArray(c.people) && c.people.length ? c.people : null; this.copyCounter = num(c.counter) || 0; }
+    // without internet any copy will do, however old; the catch-up fills in the rest once the internet is back
+    if (has && (this.offline || LocalCopy.usable(c))) {
+      fromCopy();
+      let got = [];
+      if (!this.offline) {
+        try { got = await this.limit(this.changedSince(this.shop.id, this.cursor, false), 10000); }
+        catch (e) { if (e.code !== 'unavailable') throw e; this.offline = true; }
       }
-      // anything saved while the pages were coming in is picked up by the first catch-up
-      this.cursor = Math.min(this.cursor || t0, t0) - 60000;
-      this.fullAt = Date.now(); this.loadedFrom = 'full'; this.fetched = n;
+      got.forEach((r) => { const old = this.rows[this.key(r.coll, r.id)], t = Date.parse(r.updated_at || '') || 0; if (!(old && old.t && t && t < old.t)) this.put(r); });
+      this.loadedFrom = this.offline ? 'copy-offline' : 'copy'; this.fetched = got.length;
+    } else {
+      if (this.offline) throw this.offlineFirst();
+      try {
+        const t0 = Date.now();
+        let n = 0;
+        for (let from = 0; ; from += this.PAGE) {
+          const { data, error, status } = await this.sb.from('docs').select('coll,id,data,deleted,updated_at').eq('shop_id', this.shop.id).order('coll').order('id').range(from, from + this.PAGE - 1);
+          if (error) throw this.err(error, status);
+          (data || []).forEach((r) => this.put(r));
+          n += (data || []).length;
+          if (!data || data.length < this.PAGE) break;
+        }
+        // anything saved while the pages were coming in is picked up by the first catch-up
+        this.cursor = Math.min(this.cursor || t0, t0) - 60000;
+        this.fullAt = Date.now(); this.loadedFrom = 'full'; this.fetched = n;
+      } catch (e) {
+        if (e.code !== 'unavailable' || !has) throw e;
+        fromCopy(); this.offline = true; this.loadedFrom = 'copy-offline'; this.fetched = 0;
+      }
     }
     this.saveCopy(true);
     if (!this.copyHooked) {
@@ -3776,7 +3992,7 @@ const Supa = {
     const go = () => {
       if (this.lost || !this.shop || !this.user) return;
       const rows = Object.keys(this.rows).map((k) => this.rows[k]);
-      LocalCopy.set(this.copyKey('main', this.shop.id), { v: 1, cursor: this.cursor, fullAt: this.fullAt || 0, savedAt: Date.now(), rows: rows });
+      LocalCopy.set(this.copyKey('main', this.shop.id), { v: 1, cursor: this.cursor, fullAt: this.fullAt || 0, savedAt: Date.now(), rows: rows, people: this.members || [], counter: Cloud.counterNext || this.copyCounter || 0 });
     };
     if (now) go(); else this.copyTimer = setTimeout(go, 4000);
   },
@@ -3825,9 +4041,18 @@ const Supa = {
     };
   },
   async counterGet() {
+    if (this.offline) return this.keptCounter();
     const { data, error, status } = await this.sb.rpc('next_numbers', { p_shop: this.shop.id, p_count: 0 });
-    if (error) throw this.err(error, status);
+    if (error) { const e = this.err(error, status); if (e.code === 'unavailable' && this.copyCounter) return this.keptCounter(); throw e; }
     return { exists: true, data: () => ({ next: num(data) }) };
+  },
+  // the next number as this device last knew it (or one past the highest order number it has)
+  keptCounter() {
+    const prefix = this.shop.letter + '-';
+    let top = 0;
+    Object.keys(this.rows).forEach((k) => { const r = this.rows[k]; if (r.coll !== 'orders' || r.deleted) return; const s = String((r.data || {}).no || ''); if (s.indexOf(prefix) === 0 && /^\d+$/.test(s.slice(prefix.length))) top = Math.max(top, +s.slice(prefix.length)); });
+    const next = Math.max(this.copyCounter || 0, top + 1);
+    return { exists: next > 1, data: () => ({ next: next }) };
   },
   async numbers(count, min) {
     const { data, error, status } = await this.sb.rpc('next_numbers', { p_shop: this.shop.id, p_count: count, p_min: min || 0 });
@@ -3894,10 +4119,16 @@ const Supa = {
     if (this.catching) { this.catchAgain = true; return; }
     this.catching = true;
     try {
+      await this.ensureSession();
       this.apply(await this.changedSince(this.shop.id, this.cursor, false));
-      await this.loadPeople();
-      // every shop has its owner: nobody listed means this login is no longer in the shop
-      if (!this.members.length) { this.lostAccess(); return; }
+      const ok = await this.loadPeople();
+      // every shop has its owner: nobody listed means this login is no longer in the shop (checked twice)
+      if (ok && !this.members.length && await this.reallyLost()) { this.lostAccess(); return; }
+      if (this.offline) {
+        this.offline = false;
+        if (!this.peopleOk) await this.loadPeople();
+        this.loadShops().catch(() => { /* next time */ });
+      }
       if (this.counterCb) { try { this.counterCb(await this.counterGet()); } catch (e) { /* next time */ } }
       if (!Remote.online && !Cloud.dirty()) Remote.setOnline(true);
       this.caughtAt = Date.now();
@@ -3938,7 +4169,7 @@ const Supa = {
       if (!p.tried) {
         p.tried = true;
         const c = await LocalCopy.get(this.copyKey('peek', id));
-        if (LocalCopy.usable(c)) {
+        if (LocalCopy.usable(c) || (this.offline && c && c.v === 1 && Array.isArray(c.rows))) {
           c.rows.forEach((r) => { p.rows[this.key(r.coll, r.id)] = r; });
           p.cursor = c.cursor || 0; p.fullAt = c.fullAt; p.st = this.stateOf(p.rows); p.from = 'copy'; p.okAt = c.savedAt;
         }
@@ -4061,6 +4292,65 @@ const Supa = {
   }
 };
 
+// ===== 01e-helper.js =====
+// ---------- the printer helper on the shop PC (online version) ----------
+// A website can't reach the receipt printer itself. TailorPOS-Printer.exe on the shop PC listens on that PC only
+// (127.0.0.1:47300) and prints what the app sends it: receipts and store copies drawn here as images, and the
+// cash drawer signal. It keeps no records. Each device remembers whether it uses it (only the shop PC does);
+// without it, or when it doesn't answer, printing opens the browser's print window as before.
+// The first time, the browser asks to let this site use apps on this device (Chrome: "Allow").
+const Helper = {
+  BASE: 'http://127.0.0.1:47300', KEY: 'tailorpos_helper',
+  on: false, ok: false, refused: false, info: null, printer: null, err: '', checking: null,
+  usable() { return Remote.on && Remote.kind === 'cloud' && !inClaudeFrame(); },
+  wanted() { try { return localStorage.getItem(this.KEY) === '1'; } catch (e) { return false; } },
+  remember(v) { try { if (v) localStorage.setItem(this.KEY, '1'); else localStorage.removeItem(this.KEY); } catch (e) { /* storage blocked */ } this.on = !!v; if (!v) this.ok = false; },
+  async api(path, opts) {
+    opts = opts || {};
+    const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const t = setTimeout(() => { if (ctl) ctl.abort(); }, opts.timeout || 10000);
+    let r;
+    try { r = await fetch(this.BASE + path, Object.assign({ cache: 'no-store', mode: 'cors', signal: ctl ? ctl.signal : undefined }, opts)); }
+    catch (e) {
+      this.ok = false;
+      throw new Error(e && e.name === 'AbortError' ? 'The printer helper did not answer' : 'The printer helper is not running on this PC, or the browser was not allowed to reach it');
+    } finally { clearTimeout(t); }
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      if (r.status === 403 && j.refused) { this.ok = false; this.refused = true; } // this website's address is not allowed there yet
+      throw new Error(j.error || ('Printer helper: HTTP ' + r.status));
+    }
+    return j;
+  },
+  // asks the helper who it is and how the printer is set; true when it answered
+  connect(timeout) {
+    if (this.checking) return this.checking;
+    this.checking = (async () => {
+      this.refused = false;
+      try {
+        const j = await this.api('/api/ping', { timeout: timeout || 4000 });
+        if (!j || j.app !== 'tailorpos-printer') throw new Error('Another program answers on this PC, not the Tailor POS printer helper');
+        this.info = j; this.printer = j.printer || null; this.ok = true; this.refused = false; this.err = '';
+      } catch (e) { this.ok = false; this.err = e.message; }
+      return this.ok;
+    })().finally(() => { this.checking = null; });
+    return this.checking;
+  },
+  // on start, on the device that uses it
+  async start() {
+    if (!this.usable() || !this.wanted()) return false;
+    this.on = true;
+    return this.connect(3000);
+  },
+  ready() { return this.on && this.ok && !!this.printer && !!this.printer.mode && this.printer.mode !== 'off'; },
+  print(blob, opts) {
+    const q = [];
+    if (opts && opts.drawer) q.push('drawer=1');
+    if (opts && opts.noCut) q.push('cut=0');
+    return this.api('/api/print' + (q.length ? '?' + q.join('&') : ''), { method: 'POST', headers: { 'Content-Type': 'image/png' }, body: blob, timeout: 30000 });
+  }
+};
+
 // ===== 02-data.js =====
 // ---------- icons (inline SVG, stroke = currentColor) ----------
 const SVG = (inner, vb) => '<svg viewBox="' + (vb || '0 0 24 24') + '" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + inner + '</svg>';
@@ -4180,7 +4470,11 @@ function defaultSettings() {
     attFrom: '',
     // sign-in: when required, every device asks who is working (PIN) and every action is recorded to that person
     login: { required: false, idleMin: 5, perms: null, recoveryHash: '' },
-    receiptFooter: 'Balance payable on collection. Please bring this receipt to collect.',
+    // the customer copy: opening hours under the address; near the bottom a note with a phone for complaints; the last line
+    openHours: '',
+    feedbackNote: 'If you have any complaints, suggestions, or feedback, please feel free to contact us',
+    feedbackPhone: '',
+    receiptFooter: 'Items that remain uncollected after 2 months of delivery date may be disposed of without further notice.',
     whatsappReady: 'Salam {name}, your order {no} is ready for collection at {shop}. Balance due: {balance}. Thank you!',
     whatsappReceipt: 'Salam {name}, thank you for your order {no} at {shop}.\n{items}\nTotal: {total} · Paid: {paid} · Balance: {balance}\nReady on: {due}',
     discountPresets: [
@@ -4528,6 +4822,8 @@ function migrate(state) {
   if (!state || typeof state !== 'object' || state.v !== 2) return defaultState();
   const out = Object.assign(defaultState(), state);
   out.settings = Object.assign(defaultSettings(), state.settings || {});
+  // the footer the app used to suggest gives way to the one of the shop's receipt format
+  if (out.settings.receiptFooter === 'Balance payable on collection. Please bring this receipt to collect.') out.settings.receiptFooter = defaultSettings().receiptFooter;
   if (!Array.isArray(out.settings.discountPresets)) out.settings.discountPresets = defaultSettings().discountPresets;
   ['staff', 'customers', 'orders', 'closures', 'timesheet', 'expenses', 'attendance', 'payroll'].forEach((k) => { if (!Array.isArray(out[k])) out[k] = []; });
   // the starter price list only when there is none at all (a shop may start with an empty one and add its own)
@@ -5142,7 +5438,7 @@ function topbar(title, sub, actions, back, opts) {
   opts = opts || {};
   return '<header class="topbar">' + (back ? '<a class="btn icon back" href="' + back + '" aria-label="Back">' + ico('back') + '</a>' : typeof shopChip === 'function' ? shopChip() : '') +
     '<div style="min-width:0">' + (opts.crumb ? '<div class="crumb-t">' + opts.crumb + '</div>' : '') + '<h1>' + title + '</h1>' + (sub ? '<div class="sub">' + sub + '</div>' : '') + '</div>' +
-    '<div class="actions">' + (opts.noSearch ? '' : cmdkButton()) + (actions || '') + '</div></header>';
+    '<div class="actions"><span class="net-slot">' + netPill() + '</span>' + (opts.noSearch ? '' : cmdkButton()) + (actions || '') + '</div></header>';
 }
 
 // ---------- command palette (Ctrl+K): jump to any order, customer or screen ----------
@@ -5241,11 +5537,11 @@ Actions['modal:ok'] = () => { const s = Modal.spec; if (s && s.onOk) s.onOk(Moda
 Actions['noop'] = () => {};
 
 let toastTimer = null;
-function toast(msg) {
+function toast(msg, ms) {
   const t = $('#toast'); if (!t) return;
   // on the sign-in screen the PIN pad fills the bottom, so the message shows at the top
   t.textContent = msg; t.classList.toggle('top', !!$('#app .lock')); t.classList.add('show');
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), ms || 2600);
 }
 
 // ---------- generic actions ----------
@@ -6466,7 +6762,7 @@ Views.orders = {
       const ids = rows.map((o) => o.id);
       Object.keys(UI.sel).forEach((k) => { if (ids.indexOf(k) < 0) delete UI.sel[k]; });
       const selN = Object.keys(UI.sel).length;
-      const bulk = selN ? '<div class="bulk" role="region" aria-label="Selected orders"><b class="bulk-lbl"><span class="bulk-n">' + selN + '</span> selected</b><span class="bulk-sep"></span><button type="button" class="btn sm" data-act="bulk:done">' + ico('check') + '<span>Mark done</span></button><button type="button" class="btn sm" data-act="bulk:collect">' + ico('bag') + '<span>Collected</span></button><button type="button" class="btn sm" data-act="bulk:print">' + ico('print') + '<span>Job tickets</span></button><button type="button" class="btn sm ghost" data-act="bulk:clear" aria-label="Clear selection">' + ico('x') + '</button></div>' : '';
+      const bulk = selN ? '<div class="bulk" role="region" aria-label="Selected orders"><b class="bulk-lbl"><span class="bulk-n">' + selN + '</span> selected</b><span class="bulk-sep"></span><button type="button" class="btn sm" data-act="bulk:done">' + ico('check') + '<span>Mark done</span></button><button type="button" class="btn sm" data-act="bulk:collect">' + ico('bag') + '<span>Collected</span></button><button type="button" class="btn sm" data-act="bulk:print">' + ico('print') + '<span>Store copies</span></button><button type="button" class="btn sm ghost" data-act="bulk:clear" aria-label="Clear selection">' + ico('x') + '</button></div>' : '';
       const pieces = rows.reduce((s, o) => s + orderPieces(o), 0);
       const value = rows.filter((o) => !o.voided).reduce((s, o) => s + orderTotals(o).total, 0);
       const due = rows.filter((o) => !o.voided).reduce((s, o) => s + orderTotals(o).balance, 0);
@@ -6577,7 +6873,7 @@ Views.order = {
     const live = !o.voided && o.status !== 'collected';
     const actions =
       (wa ? '<a class="btn" href="' + esc(wa) + '" target="_blank" rel="noopener" data-act="order:wa" data-id="' + o.id + '">' + ico('whatsapp') + '<span>' + (o.status === 'done' ? 'WhatsApp: ready' : 'WhatsApp') + '</span></a>' : '') +
-      '<span class="btn-group"><button type="button" class="btn" data-act="print:receipt" data-id="' + o.id + '" title="Print the customer receipt">' + ico('receipt') + '<span>Receipt</span></button><button type="button" class="btn" data-act="print:job" data-id="' + o.id + '" title="Print the job ticket for the workroom">' + ico('print') + '<span>Job ticket</span></button></span>' +
+      '<span class="btn-group"><button type="button" class="btn" data-act="print:receipt" data-id="' + o.id + '" title="Print the customer copy">' + ico('receipt') + '<span>Receipt</span></button><button type="button" class="btn" data-act="print:job" data-id="' + o.id + '" title="Print the store copy, kept with the garments">' + ico('print') + '<span>Store copy</span></button></span>' +
       (live ? '<button type="button" class="btn" data-act="order:edit" data-id="' + o.id + '">' + ico('edit') + '<span>Edit</span></button>' : '') +
       '<button type="button" class="btn icon" data-act="order:more" data-id="' + o.id + '" aria-label="More actions" title="More actions">' + ico('more') + '</button>';
     const header = topbar('<span class="mono">' + esc(o.no) + '</span> ' + statusChip(o) + (o.rush ? ' <span class="tag rush">' + ico('bolt') + 'Rush</span>' : ''), esc(c.name) + ' · ordered ' + esc(fmtDT(o.createdAt)), actions, '#orders', { noSearch: true, crumb: '<a href="#orders">Orders</a>' + ico('chevron') + '<span>Order ' + esc(o.no) + '</span>' });
@@ -7027,7 +7323,7 @@ Views.neworder = {
       requestAnimationFrame(() => { const el = $('#r-cobar'); if (el) el.innerHTML = Views.neworder.regions.cobar(); });
       const label = d.editingId ? 'Save changes' : t.balance > 0 ? 'Save order · ' + money(t.balance) + ' on account' : 'Save order';
       return '<button type="button" class="btn primary xl block" data-act="draft:save">' + ico('check') + '<span>' + esc(label) + '</span></button>' +
-        '<div class="print-opts"><label class="switch"><input type="checkbox" data-bind="draft.printReceipt"' + (d.printReceipt ? ' checked' : '') + '> Print receipt</label><label class="switch"><input type="checkbox" data-bind="draft.printJob"' + (d.printJob ? ' checked' : '') + '> Print job ticket</label></div>';
+        '<div class="print-opts"><label class="switch"><input type="checkbox" data-bind="draft.printReceipt"' + (d.printReceipt ? ' checked' : '') + '> Print receipt</label><label class="switch"><input type="checkbox" data-bind="draft.printJob"' + (d.printJob ? ' checked' : '') + '> Print store copy</label></div>';
     }
   },
   // the customer slot at the top of the ticket
@@ -7048,7 +7344,7 @@ Views.neworder = {
       '<div class="content co"><div class="co-grid"><div class="co-main">' +
       '<section class="card" id="r-cust">' + this.regions.cust() + '</section>' +
       '<section class="card"><div class="card-h"><h2>' + ico('calendar') + 'Ready date</h2><span class="card-sub">How full each day already is</span></div><div class="card-b" id="r-cal">' + this.regions.cal() + '</div></section>' +
-      '<section class="card"><div class="card-h"><h2>' + ico('edit') + 'Order note</h2><span class="card-sub">printed on the job ticket</span></div><div class="card-b">' + field('Note', inp('draft.note', d.note, 'type="text" placeholder="e.g. pickup after 5 pm"')) + '</div></section>' +
+      '<section class="card"><div class="card-h"><h2>' + ico('edit') + 'Order note</h2><span class="card-sub">printed on the receipt and the store copy</span></div><div class="card-b">' + field('Note', inp('draft.note', d.note, 'type="text" placeholder="e.g. pickup after 5 pm"')) + '</div></section>' +
       '</div><aside class="co-side"><div class="card paycard">' +
       '<div id="r-sum">' + this.regions.sum() + '</div>' +
       '<div id="r-pay">' + this.regions.pay() + '</div>' +
@@ -7373,22 +7669,26 @@ function garmentPriceRange(g) {
 Views.settings = {
   title: () => 'Settings',
   after() {
-    if (UI.tab === 'devices' && Remote.kind === 'pc' && !UI.printersLoaded) {
+    // the printers Windows knows on the shop PC (asked from TailorPOS.exe, or from the printer helper)
+    const pc = Remote.kind === 'pc', viaHelper = Remote.kind === 'cloud' && Helper.on && Helper.ok;
+    if (UI.tab === 'devices' && (pc || viaHelper) && !UI.printersLoaded) {
       UI.printersLoaded = true;
-      Remote.api('/api/printers').then((j) => { UI.printers = j; refresh('printer'); }).catch((e) => { UI.printers = { printers: [], error: e.message }; refresh('printer'); });
+      (pc ? Remote.api('/api/printers') : Helper.api('/api/printers')).then((j) => { UI.printers = j; refresh('printer'); }).catch((e) => { UI.printers = { printers: [], error: e.message }; refresh('printer'); });
     }
   },
   regions: {
     printer() {
-      if (!UI.pc) UI.pc = Object.assign({ mode: 'off', name: '', ip: '', port: 9100, width: 576, cut: true, drawerOnCash: false, copiesJob: 1 }, Remote.printer || {});
+      const cfg = Remote.printerCfg();
+      if (!UI.pc) UI.pc = Object.assign({ mode: 'off', name: '', ip: '', port: 9100, width: 576, cut: true, drawerOnCash: false, copiesJob: 1 }, cfg);
       const p = UI.pc;
       const list = (UI.printers && UI.printers.printers) || [];
-      const isWin = Remote.info && Remote.info.os === 'windows';
+      const info = Remote.kind === 'pc' ? Remote.info : Helper.info;
+      const isWin = !!info && info.os === 'windows';
       const modeBtn = (v, label) => '<button type="button" class="' + (p.mode === v ? 'on' : '') + '" data-act="set" data-path="ui.pc.mode" data-value="' + v + '" data-refresh="printer">' + label + '</button>';
       let html = '<div class="seg">' + modeBtn('windows', 'USB printer on this PC') + modeBtn('network', 'Network (LAN) printer') + modeBtn('off', 'Off · browser print') + '</div>';
       if (p.mode === 'windows') {
         html += '<label class="field">Windows printer' + (UI.printers ? '<select data-bind="ui.pc.name"><option value="">Choose…</option>' + list.map((n) => '<option' + (n === p.name ? ' selected' : '') + '>' + esc(n) + '</option>').join('') + '</select>' : '<select disabled><option>Loading printers…</option></select>') + '</label>' +
-          (UI.printers && !list.length ? '<div class="small" style="color:#A04F00">' + (isWin ? 'No printers found. Install the P8330 driver (from the CD or the seller) and connect it by USB, then reopen this page.' : 'USB printers work when TailorPOS.exe runs on Windows.') + '</div>' : '') +
+          (UI.printers && !list.length ? '<div class="small" style="color:#A04F00">' + (isWin ? 'No printers found. Install the P8330 driver (from the CD or the seller) and connect it by USB, then reopen this page.' : 'USB printers work when ' + (Remote.kind === 'pc' ? 'TailorPOS.exe' : 'the printer helper') + ' runs on Windows.') + '</div>' : '') +
           '<div class="small muted">Pick the receipt printer as Windows shows it, e.g. “POS-80” or “P8330”. If you are unsure, print a Windows test page from Printers &amp; scanners first.</div>';
       } else if (p.mode === 'network') {
         html += '<div class="form-grid">' + field('Printer IP address', inp('ui.pc.ip', p.ip, 'type="text" inputmode="decimal" placeholder="e.g. 192.168.1.100"')) + field('Port', inp('ui.pc.port', p.port, 'type="number" min="1" max="65535"')) + '</div><div class="small muted">Plug the printer\'s network cable into the shop router. Hold the FEED button while switching the printer on to print its settings page — it shows the IP address. The address must start like the PC\'s (e.g. 192.168.1.x).</div>';
@@ -7396,13 +7696,44 @@ Views.settings = {
         html += '<div class="small muted">Receipts open the browser\'s print dialog on the device you\'re using. Phones can\'t print this way to the shop printer.</div>';
       }
       if (p.mode !== 'off') {
-        html += '<div class="form-grid">' + field('Paper', '<select data-bind="ui.pc.width"><option value="576"' + (num(p.width) === 576 ? ' selected' : '') + '>80 mm (P8330)</option><option value="384"' + (num(p.width) === 384 ? ' selected' : '') + '>58 mm</option></select>') + field('Job ticket copies', '<select data-bind="ui.pc.copiesJob">' + [1, 2, 3].map((n) => '<option value="' + n + '"' + (num(p.copiesJob) === n ? ' selected' : '') + '>' + n + '</option>').join('') + '</select>') + '</div>' +
+        html += '<div class="form-grid">' + field('Paper', '<select data-bind="ui.pc.width"><option value="576"' + (num(p.width) === 576 ? ' selected' : '') + '>80 mm (P8330)</option><option value="384"' + (num(p.width) === 384 ? ' selected' : '') + '>58 mm</option></select>') + field('Store copies', '<select data-bind="ui.pc.copiesJob">' + [1, 2, 3].map((n) => '<option value="' + n + '"' + (num(p.copiesJob) === n ? ' selected' : '') + '>' + n + '</option>').join('') + '</select>') + '</div>' +
           '<label class="chk-l"><input type="checkbox" data-bind="ui.pc.cut"' + (p.cut ? ' checked' : '') + '> Cut the paper after each ticket</label>' +
           '<label class="chk-l"><input type="checkbox" data-bind="ui.pc.drawerOnCash"' + (p.drawerOnCash ? ' checked' : '') + '> Open the cash drawer when a cash payment is recorded</label>';
       }
-      html += '<div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn primary" data-act="pc:save">' + ico('check') + '<span>Save printer settings</span></button>' + (Remote.printer && Remote.printer.mode !== 'off' ? '<button type="button" class="btn" data-act="pc:test">' + ico('print') + '<span>Print a test receipt</span></button><button type="button" class="btn" data-act="pc:drawer">' + ico('cash') + '<span>Open drawer</span></button>' : '') + '</div>';
+      html += '<div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn primary" data-act="pc:save">' + ico('check') + '<span>Save printer settings</span></button>' + (cfg.mode && cfg.mode !== 'off' ? '<button type="button" class="btn" data-act="pc:test">' + ico('print') + '<span>Print a test receipt</span></button><button type="button" class="btn" data-act="pc:drawer">' + ico('cash') + '<span>Open drawer</span></button>' : '') + '</div>';
       return html;
     }
+  },
+  // the online version: the browser's print window, or straight to the receipt printer through the printer helper
+  helperCard() {
+    const h = Helper, phone = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    const card = (body) => '<section class="card col-side" id="helper-card"><div class="card-h"><h2>Printing</h2></div><div class="card-b" style="display:flex;flex-direction:column;gap:10px">' + body + '</div></section>';
+    const btns = (b) => '<div style="display:flex;gap:8px;flex-wrap:wrap">' + b + '</div>';
+    const test = '<button type="button" class="btn" data-act="pc:test">' + ico('print') + '<span>Print a test receipt</span></button>';
+    if (!h.on) {
+      return card('<div>Print opens the browser\'s print window. On the shop PC choose the <b>POSBOLT P8330</b>, paper <b>80 mm</b>, margins <b>None</b>.</div>' +
+        (phone ? '<div class="small muted">Printing straight to the receipt printer works on the shop PC, with the printer helper.</div>' + btns(test)
+          : '<div class="small muted">On the shop PC, the <b>printer helper</b> (TailorPOS-Printer.exe) prints receipts and store copies straight to the printer, without the print window, and opens the cash drawer with cash payments. Run it once on the PC, then connect it here.</div>' +
+            btns('<button type="button" class="btn primary" data-act="helper:connect">' + ico('print') + '<span>Connect the printer helper</span></button>' + test)));
+    }
+    if (!h.ok && h.refused) {
+      return card('<div class="banner red">' + ico('alert') + '<span>The printer helper on this PC does not accept this website\'s address yet.</span></div>' +
+        '<ol class="steps-ol"><li>On this PC, open <span class="mono">http://127.0.0.1:47300</span>, the printer helper\'s page.</li><li>Under <b>Websites allowed to print</b>, add <span class="mono">' + esc(location.origin) + '</span>.</li></ol>' +
+        btns('<button type="button" class="btn primary" data-act="helper:connect">' + ico('undo') + '<span>Try again</span></button><button type="button" class="btn" data-act="helper:off">Stop using it here</button>') +
+        '<div class="small muted">Meanwhile Print opens the browser\'s print window.</div>');
+    }
+    if (!h.ok) {
+      return card('<div class="banner red">' + ico('alert') + '<span>The printer helper does not answer on this PC.</span></div>' +
+        (h.err ? '<div class="small muted">' + esc(h.err) + '.</div>' : '') +
+        '<ol class="steps-ol"><li>Run <b>TailorPOS-Printer.exe</b> on this PC. After the first time it starts with Windows by itself.</li><li>When the browser asks to let this site use apps and services on this device, choose <b>Allow</b>. If it was blocked, click the icon at the left end of the address bar and allow it.</li></ol>' +
+        btns('<button type="button" class="btn primary" data-act="helper:connect">' + ico('undo') + '<span>Try again</span></button><button type="button" class="btn" data-act="helper:off">Stop using it here</button>') +
+        '<div class="small muted">Meanwhile Print opens the browser\'s print window.</div>');
+    }
+    const i = h.info || {};
+    return card('<div><span class="dot-st green"></span>Printer helper connected' + (i.host ? ' on <b>' + esc(i.host) + '</b>' : '') + '</div>' +
+      '<div id="r-printer" style="display:flex;flex-direction:column;gap:12px">' + this.regions.printer() + '</div>' +
+      (i.os === 'windows' ? '<label class="chk-l"><input type="checkbox" data-onchange="helper:autostart"' + (i.autostart ? ' checked' : '') + '> Start the printer helper when the PC starts</label>' : '') +
+      btns('<button type="button" class="btn ghost" data-act="helper:off">Stop using the printer helper on this device</button>'));
   },
   devicesWeb() {
     const email = Cloud.user && Cloud.user.email;
@@ -7416,11 +7747,7 @@ Views.settings = {
       '<div>Without internet the app keeps working with the data on this device and saves the changes when the connection is back. New orders made offline get a temporary number until then.</div>' +
       '<div class="divider"></div><h3 style="font-size:14px">Install as an app</h3>' + install +
       '<div class="divider"></div><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><div style="flex:1;min-width:200px">Signed in as <b>' + esc(email || '—') + '</b></div><button type="button" class="btn" data-act="web:signout">' + ico('logout') + '<span>Sign out of this device</span></button></div>' +
-      '</div></section>' +
-      '<section class="card col-side"><div class="card-h"><h2>Printing</h2></div><div class="card-b" style="display:flex;flex-direction:column;gap:10px">' +
-      '<div>Print opens the browser\'s print window. On the shop PC choose the <b>POSBOLT P8330</b>, paper <b>80 mm</b>, margins <b>None</b>.</div>' +
-      '<div class="small muted">Install the P8330 Windows driver first. Phones can\'t reach the USB printer from a website; direct printing from phones comes with the PC program.</div>' +
-      '<button type="button" class="btn" style="align-self:flex-start" data-act="pc:test">' + ico('print') + '<span>Print a test receipt</span></button></div></section></div>';
+      '</div></section>' + this.helperCard() + '</div>';
   },
   // Supabase: the shops this login can open, who else can open this one (partners, shop devices), install, sign out
   devicesSupa() {
@@ -7467,9 +7794,7 @@ Views.settings = {
       '<div class="divider"></div><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><div style="flex:1;min-width:200px">' + (Supa.device ? 'Signed in as a shop device of <b>' + esc(sh.name) + '</b>' : 'Signed in as <b>' + esc(email || '—') + '</b> · ' + esc(Supa.roleLabel(sh.role))) + '</div>' +
       (Supa.device ? '' : '<button type="button" class="btn" data-act="supa:password">' + ico('lock') + '<span>Change my password</span></button><button type="button" class="btn" data-act="supa:signout">' + ico('logout') + '<span>Sign out of this device</span></button>') + '</div>';
     return '<div class="row"><section class="card col-main"><div class="card-h"><h2>Online</h2><span class="small muted">' + syncStatusHTML() + '</span></div><div class="card-b" style="display:flex;flex-direction:column;gap:12px;color:#3C4652">' + html + '</div></section>' +
-      '<section class="card col-side"><div class="card-h"><h2>Printing</h2></div><div class="card-b" style="display:flex;flex-direction:column;gap:10px">' +
-      '<div>Print opens the browser\'s print window. On the shop PC choose the <b>POSBOLT P8330</b>, paper <b>80 mm</b>, margins <b>None</b>.</div>' +
-      '<button type="button" class="btn" style="align-self:flex-start" data-act="pc:test">' + ico('print') + '<span>Print a test receipt</span></button></div></section></div>';
+      this.helperCard() + '</div>';
   },
   devices() {
     if (Remote.kind === 'cloud' && Cloud.supa) return this.devicesSupa();
@@ -7480,7 +7805,7 @@ Views.settings = {
         '<ol class="steps-ol"><li>On each device, sign in to Claude with the same account.</li><li>Open this page\'s link. On a phone, add it to the home screen from the browser menu.</li><li>If a device loses the internet, it keeps working and saves its changes when the connection is back.</li></ol>' +
         '<div class="small muted">Order numbers are reserved online, so two devices saving at the same moment never get the same number.</div></div></section>' +
         '<section class="card col-side"><div class="card-h"><h2>Printing</h2></div><div class="card-b" style="display:flex;flex-direction:column;gap:10px">' +
-        '<div>Print buttons show the receipt or job ticket on screen, with a button to download it as an image.</div>' +
+        '<div>Print buttons show the receipt or store copy on screen, with a button to download it as an image.</div>' +
         '<div class="small muted">Sending tickets straight to the POSBOLT P8330 from any phone, and opening the cash drawer, come with the PC program once this website is final.</div>' +
         '<button type="button" class="btn" style="align-self:flex-start" data-act="pc:test">' + ico('print') + '<span>Preview a test receipt</span></button></div></section></div>';
     }
@@ -7512,11 +7837,12 @@ Views.settings = {
     const s = S.settings;
     const i = (key, attrs, extra) => '<input class="input' + (extra ? ' ' + extra : '') + '" data-bind="s.' + key + '" value="' + esc(s[key] == null ? '' : s[key]) + '" ' + (attrs || 'type="text"') + ' aria-label="' + esc(key) + '">';
     const unit = (key, attrs, u) => '<div class="set-unit">' + i(key, attrs) + '<span>' + u + '</span></div>';
-    return setCard('Shop details', 'Printed at the top of every receipt and job ticket.',
+    return setCard('Shop details', 'Printed at the top of the customer copy of every receipt.',
         setRow('Shop name', 'Shown in the app and on receipts', i('shopName')) +
         setRow('Branch / area', '', i('branch')) +
-        setRow('Address', '', i('address')) +
+        setRow('Address', 'One or two lines', '<textarea class="input" data-bind="s.address" rows="2" aria-label="Address">' + esc(s.address || '') + '</textarea>') +
         setRow('Phone', '', i('phone', 'type="tel"')) +
+        setRow('Opening hours', 'Printed under the address', i('openHours', 'type="text" placeholder="e.g. 10:00 AM-10:00 PM, 7 days a week"')) +
         (Auth.on()
           ? setRow('Recorded as', 'Sign-in is on, so every change carries the name of the person signed in', '<span class="set-static">' + esc((Auth.user() || {}).name || '—') + ' <a class="linkbtn" href="#setup-users">Users &amp; sign-in</a></span>')
           : setRow('Name on changes', 'While sign-in is off, every change on this device is recorded under this name. Switch sign-in on (Users &amp; sign-in) to record each person.', i('cashier'))), 'receipt') +
@@ -7530,13 +7856,14 @@ Views.settings = {
           setRow('TRN', 'Tax registration number, printed on receipts', i('trn')) : ''), 'tag') +
       setCard('Dates & workload', 'Used when suggesting ready dates and colouring busy days.',
         setRow('Usual turnaround', 'Default ready date for a new order', unit('leadDays', 'type="number" min="0" step="1"', 'days')) +
-        setRow('Busy above', 'Share of the day’s work capacity (in ' + esc(s.currency || 'AED') + ') already booked', unit('busyPct', 'type="number" min="10" max="100" step="5"', '%')) +
-        setRow('Hold uncollected orders', 'Printed on the receipt', unit('holdDays', 'type="number" min="0" step="1"', 'days')), 'calendar') +
+        setRow('Busy above', 'Share of the day’s work capacity (in ' + esc(s.currency || 'AED') + ') already booked', unit('busyPct', 'type="number" min="10" max="100" step="5"', '%')), 'calendar') +
       setCard('Order numbers', '',
         setRow('Prefix', 'Optional, e.g. AN-', i('orderPrefix', 'type="text" placeholder="none"', 'short')) +
         setRow('Next order number', 'The number the next new order gets', i('nextOrderNo', 'type="number" min="1" step="1"', 'short')), 'orders') +
       setCard('Receipt & WhatsApp messages', 'Placeholders: <span class="ph">{name}</span> <span class="ph">{no}</span> <span class="ph">{shop}</span> <span class="ph">{items}</span> <span class="ph">{total}</span> <span class="ph">{paid}</span> <span class="ph">{balance}</span> <span class="ph">{due}</span>',
-        setRow('Receipt footer', 'Printed at the bottom of every receipt', '<textarea class="input" data-bind="s.receiptFooter" rows="3" aria-label="Receipt footer">' + esc(s.receiptFooter) + '</textarea>', true) +
+        setRow('Complaints & feedback', 'Printed above the barcode of the customer copy', '<textarea class="input" data-bind="s.feedbackNote" rows="2" aria-label="Complaints and feedback note">' + esc(s.feedbackNote || '') + '</textarea>', true) +
+        setRow('Phone for complaints', 'Printed under that note. Empty: the shop phone', i('feedbackPhone', 'type="tel"')) +
+        setRow('Receipt footer', 'The last line of the customer copy, e.g. how long uncollected items are kept', '<textarea class="input" data-bind="s.receiptFooter" rows="3" aria-label="Receipt footer">' + esc(s.receiptFooter) + '</textarea>', true) +
         setRow('WhatsApp: order receipt', 'Sent from the order screen', '<textarea class="input" data-bind="s.whatsappReceipt" rows="5" aria-label="WhatsApp receipt message">' + esc(s.whatsappReceipt) + '</textarea>', true) +
         setRow('WhatsApp: ready for pickup', 'Sent when an order is done', '<textarea class="input" data-bind="s.whatsappReady" rows="3" aria-label="WhatsApp ready message">' + esc(s.whatsappReady) + '</textarea>', true), 'whatsapp');
   },
@@ -7764,14 +8091,23 @@ Actions['backup:reset'] = () => Modal.confirm('Delete everything?', 'All orders,
   if (Remote.on) { S.draft = null; Remote.restore(defaultState()).then(() => { nav('#home'); toast(Remote.kind === 'cloud' ? 'Everything deleted on all devices' : 'Everything deleted on the shop PC'); }).catch((e) => toast('Failed: ' + e.message)); return; }
   S = defaultState(); save(); nav('#home'); toast('Reset done');
 }, true);
+// the printer is set on the shop PC: in TailorPOS.exe, or in the printer helper (online version)
+const printerApi = (path, opts) => (Remote.kind === 'pc' ? Remote.api(path, opts) : Helper.api(path, opts));
 Actions['pc:save'] = () => {
   const p = Object.assign({}, UI.pc, { width: num(UI.pc.width) || 576, port: num(UI.pc.port) || 9100, copiesJob: num(UI.pc.copiesJob) || 1 });
   if (p.mode === 'windows' && !p.name) return toast('Choose the printer first');
   if (p.mode === 'network' && !String(p.ip || '').trim()) return toast('Enter the printer IP address');
-  Remote.api('/api/printer', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) }).then((j) => { Remote.printer = j; UI.pc = null; rerender(); toast('Printer settings saved'); }).catch((e) => toast('Could not save: ' + e.message));
+  printerApi('/api/printer', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) }).then((j) => { if (Remote.kind === 'pc') Remote.printer = j; else Helper.printer = j; UI.pc = null; rerender(); toast('Printer settings saved'); }).catch((e) => toast('Could not save: ' + e.message));
 };
 Actions['pc:test'] = () => { Print.out([sampleSpec()]); };
-Actions['pc:drawer'] = () => { Remote.api('/api/drawer', { method: 'POST' }).then(() => toast('Drawer signal sent')).catch((e) => toast('Drawer: ' + e.message)); };
+Actions['pc:drawer'] = () => { printerApi('/api/drawer', { method: 'POST' }).then(() => toast('Drawer signal sent')).catch((e) => toast('Drawer: ' + e.message)); };
+Actions['helper:connect'] = () => {
+  Helper.remember(true);
+  toast('Looking for the printer helper on this PC…');
+  Helper.connect(8000).then((ok) => { UI.printersLoaded = false; UI.printers = null; UI.pc = null; rerender(); toast(ok ? 'Printer helper connected' : Helper.refused ? 'The printer helper does not accept this website yet' : 'The printer helper did not answer'); });
+};
+Actions['helper:off'] = () => { Helper.remember(false); UI.pc = null; rerender(); toast('This device prints with the browser\'s print window again'); };
+Changes['helper:autostart'] = (el) => { Helper.api('/api/autostart', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on: el.checked }) }).then((j) => { if (Helper.info) Helper.info.autostart = j.on; toast(j.on ? 'The printer helper will start with Windows' : 'The printer helper will not start with Windows'); }).catch((e) => { el.checked = !el.checked; toast(e.message); }); };
 Changes['pc:autostart'] = (el) => { Remote.api('/api/autostart', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on: el.checked }) }).then((j) => { Remote.info.autostart = j.on; toast(j.on ? 'Tailor POS will start with Windows' : 'Autostart switched off'); }).catch((e) => { el.checked = !el.checked; toast(e.message); }); };
 
 // ----- website: install & sign out -----
@@ -9595,6 +9931,20 @@ function code128Widths(text) {
   return codes.map((c) => C128[c]).join('').split('').map(Number);
 }
 
+// Code 39 — the barcode of the shop's earlier receipts, read as the number between the stars (*N-1043*)
+const C39 = { 0: 'nnnwwnwnn', 1: 'wnnwnnnnw', 2: 'nnwwnnnnw', 3: 'wnwwnnnnn', 4: 'nnnwwnnnw', 5: 'wnnwwnnnn', 6: 'nnwwwnnnn', 7: 'nnnwnnwnw', 8: 'wnnwnnwnn', 9: 'nnwwnnwnn',
+  A: 'wnnnnwnnw', B: 'nnwnnwnnw', C: 'wnwnnwnnn', D: 'nnnnwwnnw', E: 'wnnnwwnnn', F: 'nnwnwwnnn', G: 'nnnnnwwnw', H: 'wnnnnwwnn', I: 'nnwnnwwnn', J: 'nnnnwwwnn',
+  K: 'wnnnnnnww', L: 'nnwnnnnww', M: 'wnwnnnnwn', N: 'nnnnwnnww', O: 'wnnnwnnwn', P: 'nnwnwnnwn', Q: 'nnnnnnwww', R: 'wnnnnnwwn', S: 'nnwnnnwwn', T: 'nnnnwnwwn',
+  U: 'wwnnnnnnw', V: 'nwwnnnnnw', W: 'wwwnnnnnn', X: 'nwnnwnnnw', Y: 'wwnnwnnnn', Z: 'nwwnwnnnn', '-': 'nwnnnnwnw', '.': 'wwnnnnwnn', ' ': 'nwwnnnwnn', '$': 'nwnwnwnnn',
+  '/': 'nwnwnnnwn', '+': 'nwnnnwnwn', '%': 'nnnwnwnwn', '*': 'nwnnwnwnn' };
+function code39Widths(text) {
+  const s = String(text || '').toUpperCase();
+  if (!s || s.split('').some((ch) => ch === '*' || !C39[ch])) return null;
+  const out = [], all = ('*' + s + '*').split('');
+  all.forEach((ch, i) => { C39[ch].split('').forEach((e) => out.push(e === 'w' ? 3 : 1)); if (i < all.length - 1) out.push(1); }); // a narrow gap between characters
+  return out;
+}
+
 // ----- ticket specs -----
 const tk = {
   c: (s, z, b) => ({ t: 'c', s: String(s), z: z || 'n', b: !!b }),
@@ -9605,7 +9955,11 @@ const tk = {
   two: (a, b) => ({ t: 'two', a: a, b: b }),
   chk: (l, r) => ({ t: 'chk', l: String(l), r: String(r || '') }),
   bar: (s) => ({ t: 'bar', s: String(s) }),
-  sp: (h) => ({ t: 'sp', h: h || 8 })
+  sp: (h) => ({ t: 'sp', h: h || 8 }),
+  // the shop's own format: a typewriter font throughout, rules of a given share of the width, a Code 39 barcode
+  mono: () => ({ t: 'font', mono: true }),
+  rule: (w, dash, center) => ({ t: 'rule', w: w || 1, dash: !!dash, center: !!center }),
+  bar39: (s, z) => ({ t: 'bar39', s: String(s), z: z || 'body' })
 };
 function shopHead() {
   const s = S.settings;
@@ -9615,52 +9969,94 @@ function shopHead() {
   if (s.vatOn && s.trn) out.push(tk.c('TRN ' + s.trn, 'sm'));
   return out;
 }
+// ----- the shop's receipts, laid out like the ones from its previous system -----
+// Customer Copy: number, welcome, the shop, opening hours, who served, the garments, payments, what is still due,
+// the day to collect, how to reach the shop, the barcode. Store Copy (kept with the garments, any number of copies):
+// number, due day, name and phone large, the garments with each job's price, payments, what is due, the barcode.
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const tkDate = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : pad2(d.getDate()) + '/' + pad2(d.getMonth() + 1) + '/' + d.getFullYear(); };
+const tkTime = (iso) => { const d = new Date(iso); if (isNaN(d)) return ''; const h = d.getHours(); return pad2(h % 12 || 12) + ':' + pad2(d.getMinutes()) + ' ' + (h < 12 ? 'AM' : 'PM'); };
+const tkWhen = (iso) => tkDate(iso) + ' ' + tkTime(iso);
+const tkDay = (ymdStr) => (ymdStr ? DAY_NAMES[new Date(ymdStr + 'T00:00:00').getDay()] : '');
+const tkYmd = (ymdStr) => (ymdStr ? ymdStr.slice(8, 10) + '/' + ymdStr.slice(5, 7) + '/' + ymdStr.slice(0, 4) : '');
+const tkAmt = (n) => { const v = round2(n); return (v < 0 ? '-' : '') + (S.settings.currency || 'AED') + money2(Math.abs(v)); };
+// one garment line with its total; the jobs under it, each with its price (^ = included above) when there are several
+function tkItems(o) {
+  const rows = [];
+  o.items.forEach((it) => {
+    const q = Math.max(1, num(it.qty));
+    rows.push(tk.r((q > 1 ? q + ' x ' : '') + it.garment, tkAmt(itemTotal(it)), 'body'));
+    it.tasks.forEach((x) => rows.push(it.tasks.length > 1 ? tk.r('-' + taskLabel(x), tkAmt(num(x.price) * q) + '^', 'body') : tk.l('-' + taskLabel(x), 'body')));
+  });
+  return rows;
+}
+function tkNotes(o, store) {
+  const c = orderCustomer(o), out = [];
+  if (o.note) out.push(o.note);
+  o.items.forEach((it) => { if (it.note) out.push(it.garment + ': ' + it.note); });
+  if (store && c.card) out.push('Measurement card ' + c.card);
+  if (store && c.notes) out.push(c.notes);
+  return [tk.sp(6), tk.l('Notes:', 'body')].concat(out.length ? out.map((n) => tk.l(n, 'body')) : [tk.sp(10)]).concat([tk.sp(6)]);
+}
+// discount, rush and VAT, when the order has any (the plain case prints the total alone)
+function tkAdjust(o, t) {
+  const rows = [];
+  if (!t.rushFee && !t.discount && !t.vatRate) return rows;
+  rows.push(tk.l('Subtotal: ' + tkAmt(t.subtotal), 'body'));
+  if (t.rushFee) rows.push(tk.l('Rush (' + num(S.settings.rushPct) + '%): ' + tkAmt(t.rushFee), 'body'));
+  if (t.discount) rows.push(tk.l('Discount' + (o.discount && o.discount.label ? ' (' + o.discount.label + ')' : '') + ': -' + tkAmt(t.discount), 'body'));
+  if (t.vatRate) rows.push(tk.l(vatLabel(t) + ': ' + tkAmt(t.vat), 'body'));
+  return rows;
+}
+function tkPayments(o) {
+  return o.payments.map((p) => tk.r((num(p.amount) < 0 ? 'Refund ' : '') + methodLabel(p.method) + ' ' + tkWhen(p.at), tkAmt(p.amount), 'body'));
+}
+function tkServed(o) {
+  return [tk.l('Transaction Detail:', 'body'), tk.l('Date: ' + tkWhen(o.createdAt), 'body')].concat(o.createdByName ? [tk.l('Served by ' + o.createdByName, 'body')] : []);
+}
 function receiptSpec(o) {
   const s = S.settings;
   const c = orderCustomer(o);
   const t = orderTotals(o);
-  const rows = shopHead().concat([tk.sep(), tk.c((t.vatRate && s.trn ? 'TAX INVOICE · ' : '') + 'ORDER RECEIPT', 'n', true),
-    tk.r('Order', o.no, 'n', true), tk.r('Date', fmtDTFull(o.createdAt)), tk.r('Customer', c.name)]);
-  if (c.phone) rows.push(tk.r('Mobile', c.phone));
-  rows.push(tk.sep());
-  o.items.forEach((it) => {
-    rows.push(tk.r(it.qty + ' x ' + it.garment, money2(itemTotal(it)), 'n', true));
-    it.tasks.forEach((x) => rows.push(tk.r(taskLabel(x), (it.qty > 1 ? it.qty + ' x ' : '') + money2(x.price), 'sm', false, true)));
-  });
-  rows.push(tk.sep(), tk.r('Subtotal', money2(t.subtotal)));
-  if (t.rushFee) rows.push(tk.r('Rush surcharge', money2(t.rushFee)));
-  if (t.discount) rows.push(tk.r('Discount' + (o.discount && o.discount.label ? ' (' + o.discount.label + ')' : ''), '-' + money2(t.discount)));
-  if (t.vatRate) rows.push(tk.r(vatLabel(t), money2(t.vat), 'sm'));
-  rows.push(tk.r('TOTAL', s.currency + ' ' + money2(t.total), 'lg', true));
-  o.payments.forEach((p) => rows.push(tk.r((p.note || 'Payment') + ' (' + methodLabel(p.method).toLowerCase() + ') ' + fmtD(new Date(p.at), { day: 'numeric', month: 'short' }), (p.amount < 0 ? '+' : '-') + money2(Math.abs(p.amount)), 'sm')));
-  rows.push(tk.r(t.balance > 0 ? 'BALANCE DUE' : 'BALANCE', s.currency + ' ' + money2(t.balance), 'lg', true));
-  if (t.balance === 0 && t.total > 0) rows.push(tk.c('PAID IN FULL', 'n', true));
-  rows.push(tk.sep());
-  if (o.voided) rows.push(tk.box([['VOIDED', 'lg', true]]));
-  else if (o.status === 'collected') rows.push(tk.box([['COLLECTED', 'sm', false], [fmtDay(localDate(o.collectedAt), true).toUpperCase(), 'lg', true]]));
-  else rows.push(tk.box([['READY ON', 'sm', false], [fmtDay(o.dueDate, true).toUpperCase(), 'lg', true]].concat(o.rush ? [['RUSH ORDER', 'n', true]] : [])));
-  if (s.receiptFooter) rows.push(tk.l(s.receiptFooter, 'sm'));
-  if (num(s.holdDays)) rows.push(tk.l('Uncollected orders are held for ' + num(s.holdDays) + ' days.', 'sm'));
-  rows.push(tk.sep(), tk.bar(o.no), tk.c('Thank you · Shukran', 'sm'));
+  const rows = [tk.mono(), tk.c('Customer Copy', 'big')];
+  if (t.vatRate && s.trn) rows.push(tk.c('Tax Invoice', 'body', true));
+  rows.push(tk.l(o.no, 'huge', true));
+  if (o.voided) rows.push(tk.l('VOIDED', 'big', true));
+  if (c.id || (o.customerName && o.customerName !== 'Walk-in')) rows.push(tk.l('Welcome ' + c.name + ',', 'body'));
+  rows.push(tk.sp(8));
+  if (s.shopName) rows.push(tk.l(s.shopName, 'body'));
+  if (s.address || s.branch) rows.push(tk.l(s.address || s.branch, 'body'));
+  if (s.phone) rows.push(tk.l('Phone: ' + s.phone, 'body'));
+  if (s.vatOn && s.trn) rows.push(tk.l('TRN: ' + s.trn, 'body'));
+  rows.push(tk.sp(8), tk.rule(0.46, true));
+  if (s.openHours) rows.push(tk.l('Opening Hours', 'body'), tk.l(s.openHours, 'body'), tk.rule(0.46, true));
+  rows.push(...tkServed(o), tk.rule(1), ...tkItems(o), ...tkNotes(o, false), tk.l('Total pieces: ' + orderPieces(o), 'body'), ...tkAdjust(o, t),
+    tk.l('Total price: ' + tkAmt(t.total), 'body'), tk.rule(0.69, true), tk.l('Payments:', 'body'), ...tkPayments(o), tk.sp(8));
+  if (t.over) rows.push(tk.l('Paid over: ' + tkAmt(t.over), 'body'));
+  rows.push(tk.l('Total Due: ' + tkAmt(t.balance), 'big'), tk.rule(0.66));
+  if (o.status === 'collected' && o.collectedAt) rows.push(tk.l('Collected on:', 'body'), tk.l(tkDay(localDate(o.collectedAt)), 'big'), tk.l(tkWhen(o.collectedAt), 'big'));
+  else rows.push(tk.l('Please keep the receipt for collection on:', 'body'), tk.l(tkDay(o.dueDate), 'big'), tk.l(tkYmd(o.dueDate), 'big'));
+  rows.push(tk.rule(0.69, false, true));
+  const ph = s.feedbackPhone || s.phone;
+  if (s.feedbackNote) rows.push(tk.c(s.feedbackNote, 'body'), tk.sp(6));
+  if (s.feedbackNote && ph) rows.push(tk.c(ph, 'body'), tk.sp(6));
+  rows.push(tk.bar39(o.no));
+  if (s.receiptFooter) rows.push(tk.c(s.receiptFooter, 'body'));
   return rows;
 }
 function jobSpec(o) {
   const c = orderCustomer(o);
-  const rows = [tk.r('JOB TICKET', S.settings.shopName || '', 'sm', true), tk.c(o.no, 'xl', true), tk.two(['READY ON', fmtDay(o.dueDate).toUpperCase()], ['PIECES', String(orderPieces(o))])];
-  if (o.rush) rows.push(tk.box([['RUSH ORDER', 'lg', true]]));
-  rows.push(tk.r('Customer', c.name));
-  if (c.phone) rows.push(tk.r('Mobile', c.phone));
-  rows.push(tk.r('Taken', fmtDT(o.createdAt)));
-  if (c.card) rows.push(tk.r('Measurements', 'card ' + c.card));
-  o.items.forEach((it, i) => {
-    rows.push(tk.sep(), tk.l('GARMENT ' + (i + 1) + ' OF ' + o.items.length, 'sm'), tk.l(it.qty + ' x ' + it.garment, 'lg', true));
-    it.tasks.forEach((x) => rows.push(tk.chk(taskLabel(x), '')));
-    if (it.note) rows.push(tk.l(it.note, 'sm'));
-  });
-  rows.push(tk.sep());
-  if (o.note) rows.push(tk.l('Notes: ' + o.note));
-  if (c.notes) rows.push(tk.l('Customer: ' + c.notes, 'sm'));
-  rows.push(tk.bar(o.no), tk.c('Pin to the bundle. No prices on this ticket.', 'sm'));
+  const t = orderTotals(o);
+  const rows = [tk.mono(), tk.c('Store Copy', 'big'), tk.l(o.no, 'huge', true)];
+  if (o.voided) rows.push(tk.l('VOIDED', 'big', true));
+  rows.push(tk.l('Due: ' + tkDay(o.dueDate), 'big'), tk.l(tkYmd(o.dueDate), 'big'), tk.l('Name: ' + c.name, 'big'));
+  if (c.phone) rows.push(tk.l(c.phone, 'big'));
+  if (o.rush) rows.push(tk.l('RUSH ORDER', 'big', true));
+  rows.push(tk.sp(8), ...tkServed(o), tk.rule(1), ...tkItems(o), ...tkNotes(o, true), tk.l('Total pieces: ' + orderPieces(o), 'body'), ...tkAdjust(o, t));
+  if (tkAdjust(o, t).length) rows.push(tk.l('Total price: ' + tkAmt(t.total), 'body'));
+  rows.push(tk.rule(0.69, true), tk.l('Payments:', 'body'), ...tkPayments(o), tk.rule(0.69, true),
+    tk.l('Total paid: ' + tkAmt(t.paid), 'body'), tk.l('Total Due: ' + tkAmt(t.balance), 'big'), tk.rule(0.69),
+    tk.l('Due date:', 'body'), tk.l(tkDay(o.dueDate), 'big'), tk.l(tkYmd(o.dueDate), 'big'), tk.bar39(o.no, 'big'));
   return rows;
 }
 function closureSpec(cl) {
@@ -9686,12 +10082,23 @@ function closureSpec(cl) {
   if (cl.note) rows.push(tk.l(cl.note, 'sm'));
   return rows;
 }
+// the printer test: the customer copy of a pretend order (nothing is saved)
 function sampleSpec() {
-  return shopHead().concat([tk.sep(), tk.c('PRINTER TEST', 'lg', true), tk.r('Left text', 'Right text'), tk.r('عميل · Customer', 'AED 125.00', 'n', true), tk.chk('Shorten / Normal', ''), tk.box([['READY ON', 'sm'], ['MON, 9 NOV 2026', 'lg', true]]), tk.bar('1001'), tk.c(fmtDTFull(nowISO()), 'sm')]);
+  const now = nowISO();
+  return receiptSpec({ id: 'sample', no: (S.settings.orderPrefix || '') + 'TEST', createdAt: now, createdByName: who(), customerId: null, customerName: 'Customer', customerPhone: '',
+    items: [{ id: 's1', garment: 'Trouser', qty: 1, note: '', tasks: [{ id: 't1', name: 'Length alteration', variant: 'Shorten', price: 15, minutes: 0 }] }],
+    dueDate: todayStr(), rush: false, discount: null, note: '', status: 'open', voided: false, payments: [{ id: 'p1', amount: 15, method: 'Card', at: now }], events: [], vat: null });
 }
 
 // ----- HTML renderer (browser print dialog / preview) -----
-const TZ = { sm: 'font-size:10px', n: '', lg: 'font-size:14px', xl: 'font-size:24px;line-height:1.15' };
+const TZ = { sm: 'font-size:10px', n: '', lg: 'font-size:14px', xl: 'font-size:24px;line-height:1.15', body: 'font-size:10.5px', big: 'font-size:20px;line-height:1.15', huge: 'font-size:34px;line-height:1.05' };
+function bar39HTML(s, z) {
+  const w = code39Widths(s);
+  if (!w) return barHTML(s);
+  let bars = '', black = true;
+  w.forEach((n) => { bars += '<span style="display:inline-block;width:' + n + 'px;height:34px;background:' + (black ? '#000' : 'transparent') + '"></span>'; black = !black; });
+  return '<div class="c" style="line-height:0;padding:8px 0 3px">' + bars + '</div><div class="c" style="' + (TZ[z] || '') + '">' + esc('*' + String(s).toUpperCase() + '*') + '</div>';
+}
 function barHTML(s) {
   const w = code128Widths(s);
   if (!w) return '';
@@ -9700,7 +10107,7 @@ function barHTML(s) {
   return '<div class="c" style="line-height:0;padding:6px 0 2px">' + bars + '</div><div class="c" style="letter-spacing:.2em">' + esc(s) + '</div>';
 }
 function specHTML(spec) {
-  return '<div class="ticket">' + spec.map((x) => {
+  return '<div class="ticket' + (spec.some((x) => x.t === 'font' && x.mono) ? ' mono' : '') + '">' + spec.map((x) => {
     const st = (x.b ? 'font-weight:700;' : '') + (TZ[x.z] || '');
     switch (x.t) {
       case 'c': return '<div class="c" style="' + st + ';white-space:pre-line">' + esc(x.s) + '</div>';
@@ -9711,6 +10118,8 @@ function specHTML(spec) {
       case 'two': return '<div style="display:flex;gap:6px">' + [x.a, x.b].map((b, i) => '<div class="box" style="' + (i ? 'width:26mm' : 'flex:1') + ';margin:4px 0"><div style="font-size:10px;letter-spacing:.08em">' + esc(b[0]) + '</div><div class="lg">' + esc(b[1]) + '</div></div>').join('') + '</div>';
       case 'chk': return '<div class="r"><span><span class="chk"></span>' + esc(x.l) + '</span><span>' + esc(x.r) + '</span></div>';
       case 'bar': return barHTML(x.s);
+      case 'bar39': return bar39HTML(x.s, x.z);
+      case 'rule': return '<div class="rule' + (x.dash ? ' dash' : '') + '" style="width:' + Math.round(x.w * 100) + '%' + (x.center ? ';margin-left:auto;margin-right:auto' : '') + '"></div>';
       case 'sp': return '<div style="height:' + x.h + 'px"></div>';
       default: return '';
     }
@@ -9722,10 +10131,12 @@ function specCanvas(spec, W) {
   W = W || 576;
   const k = W / 576;
   const PAD = Math.round(6 * k);
-  const SZ = { sm: Math.round(20 * k), n: Math.round(24 * k), lg: Math.round(30 * k), xl: Math.round(52 * k) };
-  const FAM = 'Arial, "Segoe UI", Tahoma, "Noto Sans Arabic", "Noto Sans", sans-serif';
-  const font = (z, b) => (b ? '700 ' : '400 ') + SZ[z || 'n'] + 'px ' + FAM;
-  const lh = (z) => Math.round(SZ[z || 'n'] * 1.32);
+  // body / big / huge: the shop's own receipts, about 48 characters a line on 80 mm paper, big = double size
+  const SZ = { sm: Math.round(20 * k), n: Math.round(24 * k), lg: Math.round(30 * k), xl: Math.round(52 * k), body: Math.round(20 * k), big: Math.round(40 * k), huge: Math.round(64 * k) };
+  const LH = { big: 1.16, huge: 1.08 };
+  let FAM = 'Arial, "Segoe UI", Tahoma, "Noto Sans Arabic", "Noto Sans", sans-serif', mono = false;
+  const font = (z, b) => (b ? '700 ' : mono ? '500 ' : '400 ') + SZ[z || 'n'] + 'px ' + FAM;
+  const lh = (z) => Math.round(SZ[z || 'n'] * (LH[z] || 1.32));
   const cv = document.createElement('canvas');
   const ctx = cv.getContext('2d');
   const wrap = (text, maxW, f) => {
@@ -9754,6 +10165,28 @@ function specCanvas(spec, W) {
   const inner = W - 2 * PAD;
   spec.forEach((x) => {
     switch (x.t) {
+      case 'font': if (x.mono) { mono = true; FAM = PRINT_MONO; } break;
+      case 'rule': {
+        const len = Math.round(inner * Math.min(1, x.w));
+        y += Math.round(5 * k);
+        ops.push({ k: 'rule', x: x.center ? Math.round((W - len) / 2) : PAD, w: len, y: y, dash: x.dash, lw: Math.max(2, Math.round(3 * k)) });
+        y += Math.round(11 * k);
+        break;
+      }
+      case 'bar39': {
+        let w = code39Widths(x.s), star = true;
+        if (!w) { w = code128Widths(x.s); star = false; }
+        if (!w) break;
+        const total = w.reduce((a, b) => a + b, 0);
+        const m = Math.max(2, Math.min(3, Math.floor((inner - 40) / total)));
+        const bw = total * m;
+        y += Math.round(10 * k);
+        ops.push({ k: 'bars', w: w, m: m, x: Math.round((W - bw) / 2), y: y, h: Math.round(58 * k) });
+        y += Math.round(58 * k) + Math.round(4 * k);
+        ops.push({ k: 'text', s: star ? '*' + x.s.toUpperCase() + '*' : x.s, f: font(x.z), x: W / 2, y: y, a: 'center', z: x.z });
+        y += lh(x.z);
+        break;
+      }
       case 'c': case 'l': {
         const f = font(x.z, x.b);
         wrap(x.s, inner, f).forEach((ln) => { ops.push({ k: 'text', s: ln, f: f, x: x.t === 'c' ? W / 2 : PAD, y: y, a: x.t === 'c' ? 'center' : 'left', z: x.z }); y += lh(x.z); });
@@ -9822,25 +10255,41 @@ function specCanvas(spec, W) {
     else if (o.k === 'dash') { for (let xx = PAD; xx < W - PAD; xx += Math.round(12 * k)) ctx.fillRect(xx, o.y, Math.round(7 * k), Math.max(2, Math.round(2 * k))); }
     else if (o.k === 'rect') { ctx.lineWidth = o.lw; ctx.strokeRect(o.x + o.lw / 2, o.y + o.lw / 2, o.w - o.lw, o.h - o.lw); }
     else if (o.k === 'bars') { let xx = o.x, black = true; o.w.forEach((n) => { if (black) ctx.fillRect(xx, o.y, n * o.m, o.h); xx += n * o.m; black = !black; }); }
+    else if (o.k === 'rule') {
+      if (!o.dash) ctx.fillRect(o.x, o.y, o.w, o.lw);
+      else { const seg = Math.round(9 * k), gap = Math.round(4 * k); for (let xx = o.x; xx < o.x + o.w; xx += seg + gap) ctx.fillRect(xx, o.y, Math.min(seg, o.x + o.w - xx), o.lw); }
+    }
   });
   return cv;
 }
 const canvasPNG = (cv) => new Promise((res, rej) => cv.toBlob((b) => (b ? res(b) : rej(new Error('could not draw the receipt'))), 'image/png'));
+// the receipts' typewriter font: the app's own when it is loaded, else the PC's (Consolas on Windows)
+const PRINT_MONO = '"IBM Plex Mono", Consolas, "Lucida Console", "Courier New", monospace';
+let printFontsP = null;
+function printFonts() {
+  if (!document.fonts || typeof document.fonts.load !== 'function') return Promise.resolve();
+  if (!printFontsP) printFontsP = Promise.race([Promise.all(['500 20px "IBM Plex Mono"', '700 20px "IBM Plex Mono"'].map((f) => document.fonts.load(f))).catch(() => null), sleep(1500)]);
+  return printFontsP;
+}
 
 const Print = {
   receipt(o) { return this.out([receiptSpec(o)], { name: 'receipt-' + o.no }); },
-  job(o) { return this.out([jobSpec(o)], { name: 'job-ticket-' + o.no }); },
-  both(o) { const n = Remote.canPrint() ? Math.max(1, num(Remote.printer.copiesJob) || 1) : 1; const list = [receiptSpec(o)]; for (let i = 0; i < n; i++) list.push(jobSpec(o)); return this.out(list, { name: 'order-' + o.no }); },
-  jobs(list) { return this.out(list.map(jobSpec), { name: 'job-tickets-' + todayStr() }); },
+  job(o) { return this.out([jobSpec(o)], { name: 'store-copy-' + o.no }); },
+  both(o) { const n = Remote.canPrint() ? Math.max(1, num(Remote.printerCfg().copiesJob) || 1) : 1; const list = [receiptSpec(o)]; for (let i = 0; i < n; i++) list.push(jobSpec(o)); return this.out(list, { name: 'order-' + o.no }); },
+  jobs(list) { return this.out(list.map(jobSpec), { name: 'store-copies-' + todayStr() }); },
   closure(cl) { return this.out([closureSpec(cl)], { name: 'register-' + (cl.date || todayStr()) }); },
   async out(specs, opts) {
+    // the printer helper may have started after the app (the PC was just switched on): ask it once more
+    if (!Remote.canPrint() && Helper.on && !Helper.ok) await Helper.connect(1500);
     if (Remote.canPrint()) {
       try {
-        for (const sp of specs) await Remote.printPNG(await canvasPNG(specCanvas(sp, num(Remote.printer.width) || 576)), opts);
+        await printFonts();
+        for (const sp of specs) await Remote.printPNG(await canvasPNG(specCanvas(sp, num(Remote.printerCfg().width) || 576)), opts);
         toast(specs.length > 1 ? specs.length + ' tickets sent to the printer' : 'Sent to the printer');
         return true;
       } catch (e) {
-        Modal.open({ title: 'Printer problem', render: () => '<div>' + esc(e.message) + '</div><div class="small muted">Check the printer is on, has paper and is connected to the shop PC. Printer settings are under Settings → Printer &amp; devices.</div>', footer: () => '<button type="button" class="btn" data-act="modal:close">Close</button><button type="button" class="btn dark" data-act="modal:ok">Use the browser print dialog</button>', onOk: () => { Modal.close(); Print.browser(specs); } });
+        const where = Remote.kind === 'pc' ? 'is connected to the shop PC' : 'is connected to this PC, and that the printer helper is running';
+        Modal.open({ title: 'Printer problem', render: () => '<div>' + esc(e.message) + '</div><div class="small muted">Check the printer is on, has paper, ' + where + '. Printer settings are under Settings → Printer &amp; devices.</div>', footer: () => '<button type="button" class="btn" data-act="modal:close">Close</button><button type="button" class="btn dark" data-act="modal:ok">Use the browser print dialog</button>', onOk: () => { Modal.close(); Print.browser(specs); } });
         return false;
       }
     }
@@ -9857,6 +10306,7 @@ const Print = {
         '<div class="small muted">Printing straight to the receipt printer comes with the PC program. For now, download the ticket as an image.</div>',
       footer: () => '<button type="button" class="btn" data-act="modal:close">Close</button><button type="button" class="btn dark" data-act="modal:ok">' + ico('download') + '<span>Download image</span></button>',
       onOk: async () => {
+        await printFonts();
         const parts = specs.map((sp) => specCanvas(sp, 576));
         const gap = 40;
         const cv = document.createElement('canvas');
@@ -9932,6 +10382,8 @@ async function init() {
   Auth.restore(); // stay signed in on this device unless it was idle too long
   parseHash();
   render();
+  // online version on the shop PC: the printer helper, when this device uses it
+  if (shared) Helper.start().then((ok) => { if (ok && UI.view === 'settings') rerender(); });
   if (Remote.on && Remote.kind === 'pc' && !Remote.online) toast('Could not reach the shop PC');
   window.addEventListener('beforeunload', () => { if (saveTimer) save(); });
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && saveTimer) save(); });
